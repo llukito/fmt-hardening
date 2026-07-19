@@ -641,6 +641,37 @@ TEST(format_test, truncate_to_display_width) {
   EXPECT_EQ(truncate_to_display_width("a\u200bb", 1), bytes("a\u200b"));
 }
 
+TEST(format_test, truncate_with_ellipsis) {
+  using fmt::detail::truncate_with_ellipsis;
+  auto apply = [](fmt::string_view s, size_t max_width) {
+    std::string out;
+    truncate_with_ellipsis(std::back_inserter(out), s, max_width);
+    return out;
+  };
+
+  // Fits: returned unchanged.
+  EXPECT_EQ(apply("hi", 5), "hi");
+  EXPECT_EQ(apply("hello", 5), "hello");
+  EXPECT_EQ(apply("", 3), "");
+
+  // Overflow: prefix + ellipsis, within budget.
+  EXPECT_EQ(apply("hello", 4), "h...");
+  EXPECT_EQ(apply("hello", 3), "...");
+  EXPECT_EQ(apply("abcdef", 5), "ab...");
+
+  // Wide CJK counts as two columns toward the budget.
+  EXPECT_EQ(apply("a中b", 5), "a中b");     // width 4, fits
+  EXPECT_EQ(apply("a中bc", 5), "a中bc");   // width 5, fits exactly
+  EXPECT_EQ(apply("a中bcd", 5), "a...");   // width 6; prefix budget 2 → "a" + "..."
+  EXPECT_EQ(apply("中中中", 5), "中...");  // prefix budget 2 → one wide char
+  EXPECT_EQ(apply("中中", 3), "...");
+
+  // Budget smaller than ellipsis: plain truncate, no ellipsis.
+  EXPECT_EQ(apply("hello", 2), "he");
+  EXPECT_EQ(apply("hello", 0), "");
+  EXPECT_EQ(apply("中x", 1), "");
+}
+
 template <int N> struct test_format {
   template <typename... T>
   static auto format(fmt::string_view fmt, const T&... args) -> std::string {

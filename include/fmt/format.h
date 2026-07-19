@@ -2257,6 +2257,29 @@ FMT_CONSTEXPR inline auto truncate_to_display_width(string_view s,
   return size;
 }
 
+// If s fits in max_width display columns, copies it to out unchanged.
+// Otherwise copies a prefix of s and appends "..." so the result stays within
+// max_width. Uses truncate_to_display_width for measuring. When max_width is
+// smaller than the ellipsis, falls back to a plain truncate with no ellipsis.
+template <typename OutputIt>
+FMT_CONSTEXPR auto truncate_with_ellipsis(OutputIt out, string_view s,
+                                          size_t max_width) -> OutputIt {
+  if (truncate_to_display_width(s, max_width) == s.size())
+    return copy<char>(s, out);
+
+  // "..." is three ASCII columns.
+  constexpr size_t ellipsis_width = 3;
+  if (max_width < ellipsis_width) {
+    size_t n = truncate_to_display_width(s, max_width);
+    return copy<char>(s.data(), s.data() + n, out);
+  }
+
+  size_t prefix = truncate_to_display_width(s, max_width - ellipsis_width);
+  out = copy<char>(s.data(), s.data() + prefix, out);
+  const char ellipsis[] = {'.', '.', '.'};
+  return copy<char>(ellipsis, ellipsis + ellipsis_width, out);
+}
+
 template <typename Char, typename OutputIt,
           FMT_ENABLE_IF(std::is_same<Char, char>::value)>
 FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> s,
