@@ -2239,6 +2239,24 @@ FMT_CONSTEXPR auto write(OutputIt out, Char value, const format_specs& specs,
              : write<Char>(out, static_cast<unsigned_type>(value), specs, loc);
 }
 
+// Total terminal display columns of s. Uses display_width_of so wide = 2 and
+// zero-width = 0, consistent with the truncate helpers. Functor (not a lambda)
+// so this stays valid FMT_CONSTEXPR under C++14.
+struct display_columns_counter {
+  size_t* width;
+
+  FMT_CONSTEXPR auto operator()(uint32_t cp, string_view) const -> bool {
+    *width += display_width_of(cp);
+    return true;
+  }
+};
+
+FMT_CONSTEXPR inline auto display_columns(string_view s) noexcept -> size_t {
+  size_t width = 0;
+  for_each_codepoint(s, display_columns_counter{&width});
+  return width;
+}
+
 // Number of code units from the front of s that fit in max_width display
 // columns. Uses display_width_of (wide = 2, zero-width = 0). Stops before a
 // code point that would exceed the budget; never splits a code point.
