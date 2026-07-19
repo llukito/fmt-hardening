@@ -604,6 +604,19 @@ TEST(format_test, arg_errors) {
 
 TEST(format_test, display_width_precision) {
   EXPECT_EQ(fmt::format("{:.5}", "🐱🐱🐱"), "🐱🐱");
+
+  // Combining marks and other zero-width code points do not consume precision.
+  EXPECT_EQ(fmt::format("{:.1}", "e\u0301"), "e\u0301");  // e + combining acute
+  EXPECT_EQ(fmt::format("{:.1}", "e\u0301x"), "e\u0301");
+  EXPECT_EQ(fmt::format("{:.2}", "ae\u0301"), "ae\u0301");
+  EXPECT_EQ(fmt::format("{:.1}", "a\u200bb"), "a\u200b");  // ZWSP at boundary
+  EXPECT_EQ(fmt::format("{:.1}", "a\u200db"), "a\u200d");  // ZWJ at boundary
+  EXPECT_EQ(fmt::format("{:.2}", "a\u200bb"), "a\u200bb");
+
+  // Width/padding counts zero-width code points as zero columns.
+  EXPECT_EQ(fmt::format("{:3}", "e\u0301"), "e\u0301  ");
+  EXPECT_EQ(fmt::format("{:>3}", "e\u0301"), "  e\u0301");
+  EXPECT_EQ(fmt::format("{:4}", "a\u200bb"), "a\u200bb  ");
 }
 
 template <int N> struct test_format {

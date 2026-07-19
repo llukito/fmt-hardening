@@ -655,26 +655,73 @@ FMT_CONSTEXPR void for_each_codepoint(string_view s, F f) {
   } while (buf_ptr < buf + num_chars_left);
 }
 
+// Approximate terminal display width of a code point: 0 (combining/format),
+// 2 (East Asian wide / common emoji), or 1. Range checks only, no tables.
 FMT_CONSTEXPR inline auto display_width_of(uint32_t cp) noexcept -> size_t {
+  // Zero-width: null, combining marks, format controls (ZWSP/ZWJ/…),
+  // Hangul Jamo medial/final, variation selectors.
+  if (cp == 0 ||
+      // Combining Diacritical Marks (+ supplement / extended / half marks):
+      (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) ||
+      (cp >= 0x1dc0 && cp <= 0x1dff) || (cp >= 0x20d0 && cp <= 0x20ff) ||
+      (cp >= 0xfe20 && cp <= 0xfe2f) ||
+      // Combining Cyrillic:
+      (cp >= 0x0483 && cp <= 0x0489) || (cp >= 0x2de0 && cp <= 0x2dff) ||
+      (cp >= 0xa66f && cp <= 0xa672) || (cp >= 0xa674 && cp <= 0xa67d) ||
+      (cp >= 0xa69e && cp <= 0xa69f) ||
+      // Hebrew points / accents:
+      (cp >= 0x0591 && cp <= 0x05bd) || cp == 0x05bf ||
+      (cp >= 0x05c1 && cp <= 0x05c2) || (cp >= 0x05c4 && cp <= 0x05c5) ||
+      cp == 0x05c7 ||
+      // Arabic format + tashkil:
+      (cp >= 0x0600 && cp <= 0x0605) || (cp >= 0x0610 && cp <= 0x061a) ||
+      cp == 0x061c || (cp >= 0x064b && cp <= 0x065f) || cp == 0x0670 ||
+      (cp >= 0x06d6 && cp <= 0x06dd) || (cp >= 0x06df && cp <= 0x06e4) ||
+      (cp >= 0x06e7 && cp <= 0x06e8) || (cp >= 0x06ea && cp <= 0x06ed) ||
+      // Syriac, Thaana, NKo:
+      cp == 0x070f || cp == 0x0711 || (cp >= 0x0730 && cp <= 0x074a) ||
+      (cp >= 0x07a6 && cp <= 0x07b0) || (cp >= 0x07eb && cp <= 0x07f3) ||
+      cp == 0x07fd ||
+      // Hangul Jamo medial vowels and final consonants (+ Extended-B):
+      (cp >= 0x1160 && cp <= 0x11ff) || (cp >= 0xd7b0 && cp <= 0xd7ff) ||
+      // General Punctuation format (ZWSP, ZWNJ, ZWJ, LRM, RLM, bidi):
+      (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
+      (cp >= 0x2060 && cp <= 0x206f) ||
+      // Ideographic tone marks, combining kana voiced marks:
+      (cp >= 0x302a && cp <= 0x302f) || (cp >= 0x3099 && cp <= 0x309a) ||
+      // Variation selectors, ZWNBSP/BOM, interlinear annotation:
+      (cp >= 0xfe00 && cp <= 0xfe0f) || cp == 0xfeff ||
+      (cp >= 0xfff9 && cp <= 0xfffb) ||
+      // Variation Selectors Supplement:
+      (cp >= 0xe0100 && cp <= 0xe01ef))
+    return 0;
+
+  // Wide / fullwidth (East Asian Width W/F and common wide emoji).
   return to_unsigned(
-      1 + (cp >= 0x1100 &&
-           (cp <= 0x115f ||  // Hangul Jamo init. consonants
-            cp == 0x2329 ||  // LEFT-POINTING ANGLE BRACKET
-            cp == 0x232a ||  // RIGHT-POINTING ANGLE BRACKET
-            // CJK ... Yi except IDEOGRAPHIC HALF FILL SPACE:
-            (cp >= 0x2e80 && cp <= 0xa4cf && cp != 0x303f) ||
-            (cp >= 0xac00 && cp <= 0xd7a3) ||    // Hangul Syllables
-            (cp >= 0xf900 && cp <= 0xfaff) ||    // CJK Compatibility Ideographs
-            (cp >= 0xfe10 && cp <= 0xfe19) ||    // Vertical Forms
-            (cp >= 0xfe30 && cp <= 0xfe6f) ||    // CJK Compatibility Forms
-            (cp >= 0xff00 && cp <= 0xff60) ||    // Fullwidth Forms
-            (cp >= 0xffe0 && cp <= 0xffe6) ||    // Fullwidth Forms
-            (cp >= 0x20000 && cp <= 0x2fffd) ||  // CJK
-            (cp >= 0x30000 && cp <= 0x3fffd) ||
-            // Miscellaneous Symbols and Pictographs + Emoticons:
-            (cp >= 0x1f300 && cp <= 0x1f64f) ||
-            // Supplemental Symbols and Pictographs:
-            (cp >= 0x1f900 && cp <= 0x1f9ff))));
+      1 +
+      (cp >= 0x1100 &&
+       (cp <= 0x115f ||  // Hangul Jamo initial consonants
+        cp == 0x2329 ||  // LEFT-POINTING ANGLE BRACKET
+        cp == 0x232a ||  // RIGHT-POINTING ANGLE BRACKET
+        // CJK ... Yi except IDEOGRAPHIC HALF FILL SPACE:
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp != 0x303f) ||
+        (cp >= 0xa960 && cp <= 0xa97c) ||  // Hangul Jamo Extended-A
+        (cp >= 0xac00 && cp <= 0xd7a3) ||  // Hangul Syllables
+        (cp >= 0xf900 && cp <= 0xfaff) ||  // CJK Compatibility Ideographs
+        (cp >= 0xfe10 && cp <= 0xfe19) ||  // Vertical Forms
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||  // CJK Compatibility Forms
+        (cp >= 0xff00 && cp <= 0xff60) ||  // Fullwidth Forms
+        (cp >= 0xffe0 && cp <= 0xffe6) ||  // Fullwidth Forms
+        (cp >= 0x20000 && cp <= 0x2fffd) ||  // CJK
+        (cp >= 0x30000 && cp <= 0x3fffd) ||
+        // Miscellaneous Symbols and Pictographs + Emoticons:
+        (cp >= 0x1f300 && cp <= 0x1f64f) ||
+        // Transport and Map Symbols:
+        (cp >= 0x1f680 && cp <= 0x1f6ff) ||
+        // Supplemental Symbols and Pictographs:
+        (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+        // Symbols and Pictographs Extended-A:
+        (cp >= 0x1fa00 && cp <= 0x1faff))));
 }
 
 template <typename T> struct is_integral : std::is_integral<T> {};
