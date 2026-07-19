@@ -619,6 +619,18 @@ TEST(format_test, display_width_precision) {
   EXPECT_EQ(fmt::format("{:4}", "a\u200bb"), "a\u200bb  ");
 }
 
+TEST(format_test, display_columns) {
+  using fmt::detail::display_columns;
+
+  EXPECT_EQ(display_columns(""), 0);
+  EXPECT_EQ(display_columns("hello"), 5);
+  EXPECT_EQ(display_columns("a中b"), 4);       // 1 + 2 + 1
+  EXPECT_EQ(display_columns("中中"), 4);       // 2 + 2
+  EXPECT_EQ(display_columns("e\u0301"), 1);    // combining mark is zero-width
+  EXPECT_EQ(display_columns("a\u200bb"), 2);   // ZWSP is zero-width
+  EXPECT_EQ(display_columns("🐱"), 2);         // wide emoji
+}
+
 TEST(format_test, truncate_to_display_width) {
   using fmt::detail::truncate_to_display_width;
   auto bytes = [](const char* s) {
