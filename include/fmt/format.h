@@ -2242,18 +2242,28 @@ FMT_CONSTEXPR auto write(OutputIt out, Char value, const format_specs& specs,
 // Number of code units from the front of s that fit in max_width display
 // columns. Uses display_width_of (wide = 2, zero-width = 0). Stops before a
 // code point that would exceed the budget; never splits a code point.
+// Functor (not a lambda) so this stays valid FMT_CONSTEXPR under C++14.
+struct truncate_width_limiter {
+  size_t max_width;
+  size_t* display_width;
+  size_t* size;
+
+  FMT_CONSTEXPR auto operator()(uint32_t cp, string_view sv) const -> bool {
+    size_t cp_width = display_width_of(cp);
+    if (cp_width + *display_width > max_width) return false;
+    *display_width += cp_width;
+    *size += sv.size();
+    return true;
+  }
+};
+
 FMT_CONSTEXPR inline auto truncate_to_display_width(string_view s,
                                                     size_t max_width) noexcept
     -> size_t {
   size_t display_width = 0;
   size_t size = 0;
-  for_each_codepoint(s, [&](uint32_t cp, string_view sv) {
-    size_t cp_width = display_width_of(cp);
-    if (cp_width + display_width > max_width) return false;
-    display_width += cp_width;
-    size += sv.size();
-    return true;
-  });
+  for_each_codepoint(s,
+                     truncate_width_limiter{max_width, &display_width, &size});
   return size;
 }
 
