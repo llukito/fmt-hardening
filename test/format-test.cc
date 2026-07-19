@@ -619,6 +619,28 @@ TEST(format_test, display_width_precision) {
   EXPECT_EQ(fmt::format("{:4}", "a\u200bb"), "a\u200bb  ");
 }
 
+TEST(format_test, truncate_to_display_width) {
+  using fmt::detail::truncate_to_display_width;
+  auto bytes = [](const char* s) {
+    return std::string(s).size();
+  };
+
+  EXPECT_EQ(truncate_to_display_width("hello", 3), 3);
+  EXPECT_EQ(truncate_to_display_width("hello", 10), 5);
+  EXPECT_EQ(truncate_to_display_width("hello", 0), 0);
+
+  // Wide CJK: stop before a code point that would exceed the budget.
+  EXPECT_EQ(truncate_to_display_width("a中b", 3), bytes("a中"));
+  EXPECT_EQ(truncate_to_display_width("a中b", 2), 1);  // only 'a'
+  EXPECT_EQ(truncate_to_display_width("ab中", 3), 2);  // wide does not fit
+  EXPECT_EQ(truncate_to_display_width("中", 1), 0);
+  EXPECT_EQ(truncate_to_display_width("中", 2), bytes("中"));
+
+  // Zero-width combining mark / ZWSP still fit at the boundary.
+  EXPECT_EQ(truncate_to_display_width("e\u0301x", 1), bytes("e\u0301"));
+  EXPECT_EQ(truncate_to_display_width("a\u200bb", 1), bytes("a\u200b"));
+}
+
 template <int N> struct test_format {
   template <typename... T>
   static auto format(fmt::string_view fmt, const T&... args) -> std::string {

@@ -2239,6 +2239,24 @@ FMT_CONSTEXPR auto write(OutputIt out, Char value, const format_specs& specs,
              : write<Char>(out, static_cast<unsigned_type>(value), specs, loc);
 }
 
+// Number of code units from the front of s that fit in max_width display
+// columns. Uses display_width_of (wide = 2, zero-width = 0). Stops before a
+// code point that would exceed the budget; never splits a code point.
+FMT_CONSTEXPR inline auto truncate_to_display_width(string_view s,
+                                                    size_t max_width) noexcept
+    -> size_t {
+  size_t display_width = 0;
+  size_t size = 0;
+  for_each_codepoint(s, [&](uint32_t cp, string_view sv) {
+    size_t cp_width = display_width_of(cp);
+    if (cp_width + display_width > max_width) return false;
+    display_width += cp_width;
+    size += sv.size();
+    return true;
+  });
+  return size;
+}
+
 template <typename Char, typename OutputIt,
           FMT_ENABLE_IF(std::is_same<Char, char>::value)>
 FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> s,
