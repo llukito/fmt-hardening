@@ -1928,6 +1928,7 @@ auto write_escaped_char(OutputIt out, Char v) -> OutputIt {
   return out;
 }
 
+// Writes a character with width/fill/align. Debug ('?') uses escaped form.
 template <typename Char, typename OutputIt>
 FMT_CONSTEXPR auto write_char(OutputIt out, Char value,
                               const format_specs& specs) -> OutputIt {
@@ -2228,15 +2229,18 @@ FMT_CONSTEXPR FMT_INLINE auto write(OutputIt out, T value,
   return write_int<Char>(out, arg, specs);
 }
 
+// Formats a character argument.
+// - Character presentations (default, 'c', '?'): write_char; specs validated
+//   by check_char_specs (also at parse for native_formatter).
+// - Integer presentations (d/x/o/b/...): treat the code unit as unsigned so
+//   signedness of char does not affect output across platforms.
 template <typename Char, typename OutputIt>
 FMT_CONSTEXPR auto write(OutputIt out, Char value, const format_specs& specs,
                          locale_ref loc = {}) -> OutputIt {
-  // char is formatted as unsigned char for consistency across platforms.
+  if (check_char_specs(specs)) return write_char<Char>(out, value, specs);
   using unsigned_type =
       conditional_t<std::is_same<Char, char>::value, unsigned char, unsigned>;
-  return check_char_specs(specs)
-             ? write_char<Char>(out, value, specs)
-             : write<Char>(out, static_cast<unsigned_type>(value), specs, loc);
+  return write<Char>(out, static_cast<unsigned_type>(value), specs, loc);
 }
 
 // Total terminal display columns of s. Uses display_width_of so wide = 2 and
