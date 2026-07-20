@@ -1029,7 +1029,8 @@ constexpr auto in(type t, int set) -> bool {
   return ((set >> int(t)) & 1) != 0;
 }
 
-// Bitsets of types.
+// Bitsets of types used when validating format-spec fields against the
+// argument type (see parse_format_specs).
 enum {
   sint_set =
       set(type::int_type) | set(type::long_long_type) | set(type::int128_type),
@@ -1041,7 +1042,10 @@ enum {
               set(type::long_double_type),
   string_set = set(type::string_type),
   cstring_set = set(type::cstring_type),
-  pointer_set = set(type::pointer_type)
+  pointer_set = set(type::pointer_type),
+  // Types that accept a precision field ('.' …). Width is allowed for all.
+  // Floats: digit counts; strings/cstrings: max length / display columns.
+  precision_set = float_set | string_set | cstring_set
 };
 
 struct view {};
@@ -1387,7 +1391,8 @@ template <typename Char> struct parse_dynamic_spec_result {
   arg_id_kind kind;
 };
 
-// Parses integer | "{" [arg_id] "}".
+// Parses a static integer or a nested replacement field "{…}" used for
+// dynamic width/precision: integer | "{" [arg_id] "}".
 template <typename Char>
 FMT_CONSTEXPR auto parse_dynamic_spec(const Char* begin, const Char* end,
                                       int& value, arg_ref<Char>& ref,
@@ -1421,6 +1426,8 @@ FMT_CONSTEXPR auto parse_dynamic_spec(const Char* begin, const Char* end,
   return {begin, kind};
 }
 
+// Parses a field width: integer | "{" [arg_id] "}".
+// Allowed for every argument type (unlike precision).
 template <typename Char>
 FMT_CONSTEXPR auto parse_width(const Char* begin, const Char* end,
                                format_specs& specs, arg_ref<Char>& width_ref,
@@ -1430,12 +1437,15 @@ FMT_CONSTEXPR auto parse_width(const Char* begin, const Char* end,
   return result.end;
 }
 
+// Parses precision after the leading '.': integer | "{" [arg_id] "}".
+// The caller must have verified the argument type is in precision_set;
+// a trailing '.' alone is "invalid precision".
 template <typename Char>
 FMT_CONSTEXPR auto parse_precision(const Char* begin, const Char* end,
                                    format_specs& specs,
                                    arg_ref<Char>& precision_ref,
                                    parse_context<Char>& ctx) -> const Char* {
-  ++begin;
+  ++begin;  // Consume '.'.
   if (begin == end) {
     report_error("invalid precision");
     return begin;
@@ -1533,12 +1543,15 @@ FMT_CONSTEXPR auto parse_format_specs(const Char* begin, const Char* end,
     case '1': case '2': case '3': case '4': case '5':
     case '6': case '7': case '8': case '9': case '{':
       // clang-format on
+      // Width: min field size; no argument-type restriction.
       enter_state(state::width);
       begin = parse_width(begin, end, specs, specs.width_ref, ctx);
       break;
     case '.':
-      enter_state(state::precision,
-                  in(arg_type, float_set | string_set | cstring_set));
+      // Precision: only float_set | string_set | cstring_set (precision_set).
+      // Type mismatch uses the same "invalid format specifier" path as other
+      // field/type checks via enter_state's valid flag.
+      enter_state(state::precision, in(arg_type, precision_set));
       begin = parse_precision(begin, end, specs, specs.precision_ref, ctx);
       break;
     case 'L':

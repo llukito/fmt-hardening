@@ -1060,6 +1060,53 @@ auto bad_dynamic_spec_msg = FMT_BUILTIN_TYPES
                                 ? "width/precision is out of range"
                                 : "width/precision is not integer";
 
+// Width is allowed for every argument type; precision only for floats and
+// strings (see detail::precision_set). Documents the type matrix in one place.
+TEST(format_test, width_and_precision_type_checks) {
+  // Width: accepted for int, char, bool, pointer, string, float.
+  EXPECT_EQ(fmt::format("{:5}", 42), "   42");
+  EXPECT_EQ(fmt::format("{:5}", 'x'), "x    ");
+  EXPECT_EQ(fmt::format("{:5}", true), "true ");
+  EXPECT_EQ(fmt::format("{:5}", "ab"), "ab   ");
+  EXPECT_EQ(fmt::format("{:5}", 1.5), "  1.5");
+  EXPECT_EQ(fmt::format("{:12}", reinterpret_cast<void*>(0x1)).size(), 12u);
+
+  // Precision: floats and strings only.
+  EXPECT_EQ(fmt::format("{:.2}", 1.0 / 3.0), "0.33");
+  EXPECT_EQ(fmt::format("{:.2}", "abcdef"), "ab");
+  EXPECT_EQ(fmt::format("{:.2s}", "abcdef"), "ab");
+  const char* cstr = "abcdef";
+  EXPECT_EQ(fmt::format("{:.3}", cstr), "abc");
+
+  // Precision rejected for integers, char, bool, pointer.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2}"), 42), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2d}"), 42), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2}"), 'x'), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2}"), true), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG(
+      (void)fmt::format(runtime("{:.2}"), reinterpret_cast<void*>(0x1)),
+      format_error, "invalid format specifier");
+
+  // Dynamic width/precision use the same type rules as static forms.
+  EXPECT_EQ(fmt::format("{:{}}", "hi", 5), "hi   ");
+  EXPECT_EQ(fmt::format("{:.{}}", "abcdef", 3), "abc");
+  EXPECT_EQ(fmt::format("{:.{}}", 3.14159, 2), "3.1");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.{}}"), 42, 2), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.{}}"), 'x', 1), format_error,
+                   "invalid format specifier");
+
+  // Malformed precision (type already allows precision).
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:."), 0.0), format_error,
+                   "invalid precision");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.}"), 0.0), format_error,
+                   "invalid format string");
+}
+
 TEST(format_test, runtime_width) {
   auto int_maxer = std::to_string(INT_MAX + 1u);
   EXPECT_THROW_MSG((void)fmt::format(runtime("{0:{" + int_maxer), 0),
