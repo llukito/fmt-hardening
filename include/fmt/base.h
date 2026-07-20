@@ -1664,13 +1664,21 @@ FMT_CONSTEXPR void parse_format_string(basic_string_view<Char> fmt,
   handler.on_text(begin, end);
 }
 
-// Checks char specs and returns true iff the presentation type is char-like.
+// Presentation types that format a char as a character (not an integer).
+// Default / 'c' print the code unit; '?' uses debug/escaped form.
+FMT_CONSTEXPR inline auto is_char_presentation(presentation_type t) noexcept
+    -> bool {
+  return t == presentation_type::none || t == presentation_type::chr ||
+         t == presentation_type::debug;
+}
+
+// Validates and classifies format specs for a char argument.
+// Returns true  → format as a character via write_char (none / 'c' / '?').
+// Returns false → format as an integer via write_int (d/x/o/b/...).
+// Errors if number-only options (sign, '#', numeric '0' align) are used with a
+// character presentation — same message as before for compatibility.
 FMT_CONSTEXPR inline auto check_char_specs(const format_specs& specs) -> bool {
-  auto type = specs.type();
-  if (type != presentation_type::none && type != presentation_type::chr &&
-      type != presentation_type::debug) {
-    return false;
-  }
+  if (!is_char_presentation(specs.type())) return false;
   if (specs.align() == align::numeric || specs.sign() != sign::none ||
       specs.alt()) {
     report_error("invalid format specifier for char");
@@ -2378,7 +2386,9 @@ template <typename T, typename Char, type TYPE> struct native_formatter {
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
     if (ctx.begin() == ctx.end() || *ctx.begin() == '}') return ctx.begin();
     auto end = parse_format_specs(ctx.begin(), ctx.end(), specs_, ctx, TYPE);
-    if FMT_CONSTEXPR20 (TYPE == type::char_type) check_char_specs(specs_);
+    // Reject number-only options on character presentations at parse time
+    // (integer presentations for char are allowed and return false here).
+    if (TYPE == type::char_type) check_char_specs(specs_);
     return end;
   }
 

@@ -1751,10 +1751,28 @@ TEST(format_test, format_long_double) {
 }
 
 TEST(format_test, format_char) {
+  // Allowed presentation types: c (char), ?, and integer bBdoxX.
   const char types[] = "cbBdoxX";
   check_unknown_types('a', types, "char");
+
+  // Character presentations.
   EXPECT_EQ(fmt::format("{0}", 'a'), "a");
   EXPECT_EQ(fmt::format("{0:c}", 'z'), "z");
+  EXPECT_EQ(fmt::format("{}", '\n'), "\n");
+  EXPECT_EQ(fmt::format("{:?}", '\n'), "'\\n'");
+  EXPECT_EQ(fmt::format("{:?}", '\''), "'\\''");
+  EXPECT_EQ(fmt::format("{:?}", 'a'), "'a'");
+
+  // Width and alignment (left is default for char).
+  EXPECT_EQ(fmt::format("{:5}", 'x'), "x    ");
+  EXPECT_EQ(fmt::format("{:<5}", 'x'), "x    ");
+  EXPECT_EQ(fmt::format("{:>5}", 'x'), "    x");
+  EXPECT_EQ(fmt::format("{:^5}", 'x'), "  x  ");
+  EXPECT_EQ(fmt::format("{:*>5}", 'x'), "****x");
+  // Debug padding uses the unescaped size (1), same as before.
+  EXPECT_EQ(fmt::format("{:5?}", 'x'), "'x'    ");
+
+  // Integer presentations: same as formatting the code unit as unsigned.
   int n = 'x';
   for (const char* type = types + 1; *type; ++type) {
     std::string format_str = fmt::format("{{:{}}}", *type);
@@ -1763,10 +1781,26 @@ TEST(format_test, format_char) {
         << format_str;
   }
   EXPECT_EQ(fmt::format("{:02X}", n), fmt::format("{:02X}", 'x'));
-
-  EXPECT_EQ(fmt::format("{}", '\n'), "\n");
-  EXPECT_EQ(fmt::format("{:?}", '\n'), "'\\n'");
   EXPECT_EQ(fmt::format("{:x}", '\xff'), "ff");
+  EXPECT_EQ(fmt::format("{:#x}", 'A'), "0x41");
+  EXPECT_EQ(fmt::format("{:b}", 'A'), "1000001");
+  EXPECT_EQ(fmt::format("{:d}", 'A'), "65");
+
+  // Number-only options are invalid with character presentations.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:+}"), 'a'), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:+c}"), 'a'), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:#}"), 'a'), format_error,
+                   "invalid format specifier for char");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:#c}"), 'a'), format_error,
+                   "invalid format specifier for char");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:05}"), 'a'), format_error,
+                   "invalid format specifier for char");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.1}"), 'a'), format_error,
+                   "invalid format specifier");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:s}"), 'a'), format_error,
+                   "invalid format specifier");
 }
 
 TEST(format_test, format_volatile_char) {
