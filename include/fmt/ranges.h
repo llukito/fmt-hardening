@@ -284,6 +284,35 @@ template <typename FormatContext> struct format_tuple_element {
   basic_string_view<char_type> separator;
 };
 
+// Shared separator / bracket storage and setters for range and tuple formatters.
+//
+// Default separator is ", " for both. Bracket defaults are type-specific and
+// set by the derived formatter (see below). Out of the box this produces:
+//
+//   sequence range (vector, array, …):  [1, 2, 3]
+//   set:                                {1, 2, 3}
+//   tuple / pair:                       (1, 2, 3)
+//
+// fmt::join is different: no brackets; the separator is the one passed to
+// join() (not this helper). See join_view.
+template <typename Char>
+struct separator_and_brackets {
+  FMT_CONSTEXPR void set_separator(basic_string_view<Char> sep) {
+    separator_ = sep;
+  }
+
+  FMT_CONSTEXPR void set_brackets(basic_string_view<Char> open,
+                                  basic_string_view<Char> close) {
+    opening_bracket_ = open;
+    closing_bracket_ = close;
+  }
+
+ protected:
+  basic_string_view<Char> separator_ = string_literal<Char, ',', ' '>{};
+  basic_string_view<Char> opening_bracket_;
+  basic_string_view<Char> closing_bracket_;
+};
+
 }  // namespace detail
 
 FMT_EXPORT
@@ -297,31 +326,21 @@ template <typename T, typename C> struct is_tuple_formattable {
   static constexpr bool value = detail::is_tuple_formattable_<T, C>::value;
 };
 
+// Formats tuple-like types as (elem, elem, …) with ", " between elements.
+// Use set_brackets / set_separator to override; the 'n' specifier clears both.
 template <typename Tuple, typename Char>
 struct formatter<Tuple, Char,
                  enable_if_t<fmt::is_tuple_like<Tuple>::value &&
-                             fmt::is_tuple_formattable<Tuple, Char>::value>> {
+                             fmt::is_tuple_formattable<Tuple, Char>::value>>
+    : detail::separator_and_brackets<Char> {
  private:
   decltype(detail::tuple::get_formatters<Tuple, Char>(
       detail::tuple_index_sequence<Tuple>())) formatters_;
 
-  basic_string_view<Char> separator_ = detail::string_literal<Char, ',', ' '>{};
-  basic_string_view<Char> opening_bracket_ =
-      detail::string_literal<Char, '('>{};
-  basic_string_view<Char> closing_bracket_ =
-      detail::string_literal<Char, ')'>{};
-
  public:
-  FMT_CONSTEXPR formatter() {}
-
-  FMT_CONSTEXPR void set_separator(basic_string_view<Char> sep) {
-    separator_ = sep;
-  }
-
-  FMT_CONSTEXPR void set_brackets(basic_string_view<Char> open,
-                                  basic_string_view<Char> close) {
-    opening_bracket_ = open;
-    closing_bracket_ = close;
+  FMT_CONSTEXPR formatter() {
+    this->set_brackets(detail::string_literal<Char, '('>{},
+                       detail::string_literal<Char, ')'>{});
   }
 
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
@@ -329,8 +348,8 @@ struct formatter<Tuple, Char,
     auto end = ctx.end();
     if (it != end && detail::to_ascii(*it) == 'n') {
       ++it;
-      set_brackets({}, {});
-      set_separator({});
+      this->set_brackets({}, {});
+      this->set_separator({});
     }
     if (it != end && *it != '}') report_error("invalid format specifier");
     ctx.advance_to(it);
@@ -341,11 +360,11 @@ struct formatter<Tuple, Char,
   template <typename FormatContext>
   auto format(const Tuple& value, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    ctx.advance_to(detail::copy<Char>(opening_bracket_, ctx.out()));
-    detail::for_each2(
-        formatters_, value,
-        detail::format_tuple_element<FormatContext>{0, ctx, separator_});
-    return detail::copy<Char>(closing_bracket_, ctx.out());
+    ctx.advance_to(detail::copy<Char>(this->opening_bracket_, ctx.out()));
+    detail::for_each2(formatters_, value,
+                      detail::format_tuple_element<FormatContext>{
+                          0, ctx, this->separator_});
+    return detail::copy<Char>(this->closing_bracket_, ctx.out());
   }
 };
 
@@ -380,18 +399,18 @@ FMT_EXPORT
 template <typename T, typename Char, typename Enable = void>
 struct range_formatter;
 
+// Formats a range as [elem, elem, …] with ", " between elements by default.
+// Element formatters get debug format enabled when no element specs are given,
+// so strings appear quoted (e.g. ["a", "b"]). Sets use {} brackets instead
+// (configured by formatter<R> for set kinds). 'n' clears the brackets.
 template <typename T, typename Char>
 struct range_formatter<
     T, Char,
     enable_if_t<conjunction<std::is_same<T, remove_cvref_t<T>>,
-                            is_formattable<T, Char>>::value>> {
+                            is_formattable<T, Char>>::value>>
+    : detail::separator_and_brackets<Char> {
  private:
   detail::range_formatter_type<Char, T> underlying_;
-  basic_string_view<Char> separator_ = detail::string_literal<Char, ',', ' '>{};
-  basic_string_view<Char> opening_bracket_ =
-      detail::string_literal<Char, '['>{};
-  basic_string_view<Char> closing_bracket_ =
-      detail::string_literal<Char, ']'>{};
   bool is_debug = false;
 
   template <typename Output, typename It, typename Sentinel, typename U = T,
@@ -412,20 +431,13 @@ struct range_formatter<
   }
 
  public:
-  FMT_CONSTEXPR range_formatter() {}
+  FMT_CONSTEXPR range_formatter() {
+    this->set_brackets(detail::string_literal<Char, '['>{},
+                       detail::string_literal<Char, ']'>{});
+  }
 
   FMT_CONSTEXPR auto underlying() -> detail::range_formatter_type<Char, T>& {
     return underlying_;
-  }
-
-  FMT_CONSTEXPR void set_separator(basic_string_view<Char> sep) {
-    separator_ = sep;
-  }
-
-  FMT_CONSTEXPR void set_brackets(basic_string_view<Char> open,
-                                  basic_string_view<Char> close) {
-    opening_bracket_ = open;
-    closing_bracket_ = close;
   }
 
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
@@ -436,12 +448,12 @@ struct range_formatter<
 
     switch (detail::to_ascii(*it)) {
     case 'n':
-      set_brackets({}, {});
+      this->set_brackets({}, {});
       ++it;
       break;
     case '?':
       is_debug = true;
-      set_brackets({}, {});
+      this->set_brackets({}, {});
       ++it;
       if (it == end || *it != 's') report_error("invalid format specifier");
       FMT_FALLTHROUGH;
@@ -449,9 +461,9 @@ struct range_formatter<
       if (!std::is_same<T, Char>::value)
         report_error("invalid format specifier");
       if (!is_debug) {
-        set_brackets(detail::string_literal<Char, '"'>{},
-                     detail::string_literal<Char, '"'>{});
-        set_separator({});
+        this->set_brackets(detail::string_literal<Char, '"'>{},
+                           detail::string_literal<Char, '"'>{});
+        this->set_separator({});
         detail::maybe_set_debug_format(underlying_, false);
       }
       ++it;
@@ -476,16 +488,16 @@ struct range_formatter<
     auto end = detail::range_end(range);
     if (is_debug) return write_debug_string(out, std::move(it), end);
 
-    out = detail::copy<Char>(opening_bracket_, out);
+    out = detail::copy<Char>(this->opening_bracket_, out);
     int i = 0;
     for (; it != end; ++it) {
-      if (i > 0) out = detail::copy<Char>(separator_, out);
+      if (i > 0) out = detail::copy<Char>(this->separator_, out);
       ctx.advance_to(out);
       auto&& item = *it;  // Need an lvalue
       out = underlying_.format(item, ctx);
       ++i;
     }
-    out = detail::copy<Char>(closing_bracket_, out);
+    out = detail::copy<Char>(this->closing_bracket_, out);
     return out;
   }
 };
@@ -629,6 +641,17 @@ struct formatter<
   }
 };
 
+// A view over [begin, end) that formats only the elements separated by sep.
+//
+// Compared to formatting a range directly:
+//   range (default):  [1, 2, 3]  or  ["a", "b"]   — brackets + ", "
+//   join(v, ", "):    1, 2, 3    or  a, b         — no brackets
+//
+// Format specs on the join apply to each element (e.g. "{:02}" → 01, 02, 03).
+// Unlike the range formatter, join does not force debug format on elements, so
+// strings are not quoted unless the element specs request it (e.g. "{:?}").
+// That difference is a common source of confusion when switching between
+// fmt::format("{}", v) and fmt::format("{}", fmt::join(v, ", ")).
 template <typename It, typename Sentinel, typename Char = char>
 struct join_view : detail::view {
   It begin;
@@ -814,6 +837,13 @@ auto join(It begin, Sentinel end, string_view sep) -> join_view<It, Sentinel> {
 
 /**
  * Returns a view that formats `range` with elements separated by `sep`.
+ *
+ * Unlike formatting the range directly (which adds brackets and, by default,
+ * debug-quotes string elements), join emits only the elements and `sep`:
+ *
+ *     auto v = std::vector<std::string>{"a", "b"};
+ *     fmt::print("{}", v);              // ["a", "b"]
+ *     fmt::print("{}", fmt::join(v, ", "));  // a, b
  *
  * **Example**:
  *
