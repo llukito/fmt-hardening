@@ -1742,6 +1742,7 @@ auto select(T, F false_value) -> F {
   return false_value;
 }
 
+// Writes n copies of the fill character (n is a copy count, not columns).
 template <typename Char, typename OutputIt>
 FMT_CONSTEXPR FMT_NOINLINE auto fill(OutputIt it, size_t n,
                                      const basic_specs& specs) -> OutputIt {
@@ -1753,9 +1754,59 @@ FMT_CONSTEXPR FMT_NOINLINE auto fill(OutputIt it, size_t n,
   return it;
 }
 
+// Display width of one fill character/string. Zero-width fills are treated as
+// width 1 so padding still terminates.
+template <typename Char>
+FMT_CONSTEXPR auto fill_width(const basic_specs& specs) noexcept -> size_t {
+  size_t n = specs.fill_size();
+  if (n == 0) return 1;
+  if (n == 1) {
+    auto cp = static_cast<uint32_t>(
+        static_cast<make_unsigned_t<Char>>(specs.fill_unit<Char>()));
+    size_t w = display_width_of(cp);
+    return w == 0 ? size_t(1) : w;
+  }
+  // Multi-unit fill (typically one UTF-8 code point when Char == char).
+  if (std::is_same<Char, char>::value) {
+    if (const char* data = specs.fill<char>()) {
+      size_t width = 0;
+      // Reuse the same code-point width rules as content measurement.
+      struct sum_fill_width {
+        size_t* width;
+        FMT_CONSTEXPR auto operator()(uint32_t cp, string_view) const -> bool {
+          *width += display_width_of(cp);
+          return true;
+        }
+      };
+      for_each_codepoint(string_view(data, n), sum_fill_width{&width});
+      return width == 0 ? size_t(1) : width;
+    }
+  }
+  return 1;
+}
+
+// Fills `columns` display columns using the fill character. When the fill is
+// wider than one column and columns is not a multiple of the fill width, as
+// many full fill characters as fit are written and the remainder is spaces so
+// the total stays exact. Single-column fills (ASCII) match the old char-count
+// path: one fill per column.
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto fill_columns(OutputIt it, size_t columns,
+                                const basic_specs& specs) -> OutputIt {
+  if (columns == 0) return it;
+  size_t fwidth = fill_width<Char>(specs);
+  if (fwidth <= 1) return fill<Char>(it, columns, specs);
+  size_t count = columns / fwidth;
+  size_t rest = columns % fwidth;
+  it = fill<Char>(it, count, specs);
+  return detail::fill_n(it, rest, static_cast<Char>(' '));
+}
+
 // Writes the output of f, padded according to format specifications in specs.
 // size: output size in code units.
 // width: output display width in (terminal) column positions.
+// Padding is measured in display columns; wide fill characters count as their
+// display width (e.g. CJK fill is 2 columns per character).
 template <typename Char, align default_align = align::left, typename OutputIt,
           typename F>
 FMT_CONSTEXPR auto write_padded(OutputIt out, const format_specs& specs,
@@ -1770,10 +1821,21 @@ FMT_CONSTEXPR auto write_padded(OutputIt out, const format_specs& specs,
       default_align == align::left ? "\x1f\x1f\x00\x01" : "\x00\x1f\x00\x01";
   size_t left_padding = padding >> shifts[static_cast<int>(specs.align())];
   size_t right_padding = padding - left_padding;
-  auto it = reserve(out, size + padding * specs.fill_size());
-  if (left_padding != 0) it = fill<Char>(it, left_padding, specs);
+
+  size_t fwidth = fill_width<Char>(specs);
+  size_t fbytes = specs.fill_size() == 0 ? 1 : specs.fill_size();
+  // Byte length of column padding: full fills + single-byte space remainder.
+  auto padding_bytes = [fwidth, fbytes](size_t cols) -> size_t {
+    if (fwidth <= 1) return cols * fbytes;
+    return (cols / fwidth) * fbytes + (cols % fwidth);
+  };
+
+  auto it =
+      reserve(out, size + padding_bytes(left_padding) +
+                       padding_bytes(right_padding));
+  it = fill_columns<Char>(it, left_padding, specs);
   it = f(it);
-  if (right_padding != 0) it = fill<Char>(it, right_padding, specs);
+  it = fill_columns<Char>(it, right_padding, specs);
   return base_iterator(out, it);
 }
 

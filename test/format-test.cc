@@ -844,6 +844,27 @@ TEST(format_test, fill) {
   EXPECT_EQ(fmt::format("{:}=", "foo"), "foo=");
   EXPECT_EQ(std::string("\0\0\0*", 4),
             fmt::format(string_view("{:\0>4}", 6), '*'));
+
+  // Wide (CJK) fill is counted in display columns, same as content width.
+  // '42' is 2 columns; padding 3 with fill width 2 → one 中 + one space.
+  EXPECT_EQ(fmt::format("{:中>5}", 42), "中 42");
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中>5}", 42)), 5);
+  // Padding 4 columns → two 中, exact.
+  EXPECT_EQ(fmt::format("{:中>6}", 42), "中中42");
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中>6}", 42)), 6);
+  // Left align: padding 4 columns → two 中 (exact multiple).
+  EXPECT_EQ(fmt::format("{:中<5}", "a"), "a中中");
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中<5}", "a")), 5);
+  EXPECT_EQ(fmt::format("{:中>4}", "中"), "中中");
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中>4}", "中")), 4);
+  // Center: content "x" (1 col) in width 5 → 2 cols each side → one 中 per side.
+  EXPECT_EQ(fmt::format("{:中^5}", "x"), "中x中");
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中^5}", "x")), 5);
+  // Remainder columns (padding not divisible by fill width) use spaces.
+  EXPECT_EQ(fmt::format("{:中>3}", "a"), "中a");   // pad 2 → one 中
+  EXPECT_EQ(fmt::format("{:中>4}", "a"), "中 a");  // pad 3 → one 中 + space
+  EXPECT_EQ(fmt::display_width(fmt::format("{:中>4}", "a")), 4);
+  // Single-column non-ASCII fill still counts as one column each.
   EXPECT_EQ(fmt::format("{0:ж>4}", 42), "жж42");
   EXPECT_THROW_MSG((void)fmt::format(runtime("{:\x80\x80\x80\x80\x80>}"), 0),
                    format_error, "invalid format specifier");
