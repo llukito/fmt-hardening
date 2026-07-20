@@ -1466,8 +1466,18 @@ FMT_CONSTEXPR auto parse_format_specs(const Char* begin, const Char* end,
   struct {
     state current_state = state::start;
     FMT_CONSTEXPR void operator()(state s, bool valid = true) {
-      if (current_state >= s || !valid)
-        report_error("invalid format specifier");
+      if (!valid) report_error("invalid format specifier");
+      // Spec fields must appear in order: align, sign, #, 0, width, precision,
+      // L. Report a clearer error for out-of-order alignment/precision; leave
+      // other out-of-order cases (e.g. sign after width) as the generic message.
+      if (current_state >= s) {
+        if (s == state::align)
+          report_error("format specifier alignment out of order");
+        else if (s == state::precision)
+          report_error("format specifier precision out of order");
+        else
+          report_error("invalid format specifier");
+      }
       current_state = s;
     }
   } enter_state;

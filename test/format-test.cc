@@ -809,6 +809,20 @@ TEST(format_test, center_align) {
   EXPECT_EQ(fmt::format("{0:^8}", reinterpret_cast<void*>(0xface)), " 0xface ");
 }
 
+TEST(format_test, format_spec_order) {
+  // Alignment after width (fill+align form): clearer out-of-order error.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:10*<}"), "x"), format_error,
+                   "format specifier alignment out of order");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:5.2<}"), 1.5), format_error,
+                   "format specifier alignment out of order");
+  // Repeated / out-of-order precision.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:5.2.3f}"), 1.5), format_error,
+                   "format specifier precision out of order");
+  // Sign after width still uses the generic message (unchanged path).
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:5+}"), 42), format_error,
+                   "invalid format specifier");
+}
+
 TEST(format_test, fill) {
   EXPECT_THROW_MSG((void)fmt::format(runtime("{0:{<5}"), 'c'), format_error,
                    "invalid fill character '{'");
