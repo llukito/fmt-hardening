@@ -4485,6 +4485,22 @@ FMT_NODISCARD FMT_INLINE auto format(format_string<T...> fmt, T&&... args)
 }
 
 /**
+ * Returns the approximate terminal display width of `s` in columns.
+ * East Asian wide and fullwidth characters and common emoji count as two
+ * columns; combining marks and zero-width format characters count as zero;
+ * everything else counts as one. Matches the column accounting used for
+ * string width and precision in format specs.
+ *
+ * **Example**:
+ *
+ *     auto n = fmt::display_width("a中b");  // n == 4
+ */
+FMT_NODISCARD FMT_CONSTEXPR inline auto display_width(string_view s) noexcept
+    -> size_t {
+  return detail::display_columns(s);
+}
+
+/**
  * Converts `value` to `std::string` using the default format for type `T`.
  *
  * **Example**:
