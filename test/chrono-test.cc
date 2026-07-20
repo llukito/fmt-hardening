@@ -499,6 +499,55 @@ TEST(chrono_test, format_specs) {
   EXPECT_EQ(fmt::format("{:%q}", std::chrono::seconds(12345)), "s");
 }
 
+// Fractional part of %S for sub-second durations (write_fractional_seconds).
+TEST(chrono_test, fractional_seconds) {
+  using std::chrono::microseconds;
+  using std::chrono::milliseconds;
+  using std::chrono::nanoseconds;
+  using std::chrono::seconds;
+  using centiseconds = std::chrono::duration<int, std::centi>;
+  using deciseconds = std::chrono::duration<int, std::deci>;
+
+  // Default precision follows the duration period.
+  EXPECT_EQ(fmt::format("{:%S}", seconds(5)), "05");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(0)), "00.000");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(1)), "00.001");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(10)), "00.010");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(100)), "00.100");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(999)), "00.999");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(1000)), "01.000");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(1001)), "01.001");
+  EXPECT_EQ(fmt::format("{:%S}", milliseconds(1234)), "01.234");
+  EXPECT_EQ(fmt::format("{:%S}", microseconds(1)), "00.000001");
+  EXPECT_EQ(fmt::format("{:%S}", microseconds(1234567)), "01.234567");
+  EXPECT_EQ(fmt::format("{:%S}", nanoseconds(1)), "00.000000001");
+  EXPECT_EQ(fmt::format("{:%S}", nanoseconds(1234567890)), "01.234567890");
+  EXPECT_EQ(fmt::format("{:%S}", centiseconds(123)), "01.23");
+  EXPECT_EQ(fmt::format("{:%S}", deciseconds(15)), "01.5");
+
+  // Explicit precision: truncate or pad fractional digits.
+  EXPECT_EQ(fmt::format("{:.0%S}", milliseconds(1234)), "01");
+  EXPECT_EQ(fmt::format("{:.0%S}", milliseconds(999)), "00");
+  EXPECT_EQ(fmt::format("{:.1%S}", milliseconds(1234)), "01.2");
+  EXPECT_EQ(fmt::format("{:.2%S}", milliseconds(1234)), "01.23");
+  EXPECT_EQ(fmt::format("{:.3%S}", milliseconds(1234)), "01.234");
+  EXPECT_EQ(fmt::format("{:.4%S}", milliseconds(1234)), "01.2340");
+  EXPECT_EQ(fmt::format("{:.6%S}", milliseconds(1234)), "01.234000");
+  EXPECT_EQ(fmt::format("{:.1%S}", milliseconds(999)), "00.9");
+  EXPECT_EQ(fmt::format("{:.1%S}", milliseconds(100)), "00.1");
+  EXPECT_EQ(fmt::format("{:.1%S}", milliseconds(10)), "00.0");
+  EXPECT_EQ(fmt::format("{:.1%S}", milliseconds(0)), "00.0");
+  EXPECT_EQ(fmt::format("{:.6%S}", microseconds(1234567)), "01.234567");
+  EXPECT_EQ(fmt::format("{:.3%S}", microseconds(1234567)), "01.234");
+  EXPECT_EQ(fmt::format("{:.9%S}", nanoseconds(1234567890)), "01.234567890");
+  EXPECT_EQ(fmt::format("{:.3%S}", nanoseconds(1234567890)), "01.234");
+  EXPECT_EQ(fmt::format("{:.12%S}", milliseconds(1)), "00.001000000000");
+  EXPECT_EQ(fmt::format("{:.12%S}", milliseconds(1001)), "01.001000000000");
+
+  // %T includes the same fractional seconds.
+  EXPECT_EQ(fmt::format("{:%T}", milliseconds(3723123)), "01:02:03.123");
+}
+
 TEST(chrono_test, invalid_specs) {
   auto sec = std::chrono::seconds(0);
   EXPECT_THROW_MSG((void)fmt::format(runtime("{:%a}"), sec), fmt::format_error,

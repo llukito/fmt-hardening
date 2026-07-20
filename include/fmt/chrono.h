@@ -960,54 +960,78 @@ struct count_fractional_digits<Num, Den, N, false> {
   static constexpr int value = (Num % Den == 0) ? N : 6;
 };
 
-// Format subseconds which are given as an integer type with an appropriate
-// number of digits.
+// Writes the fractional part of `d` after a whole-second field (e.g. "%S").
+//
+// `precision`:
+//   -1  — use the full width implied by Duration's period (no truncation)
+//    0  — omit the fractional part entirely
+//   >0  — exactly that many digits after the decimal point (truncate/pad)
+//
+// Precondition: for precision == -1, Duration::rep is not floating-point
+// (floating reps use write_floating_seconds instead).
 template <typename Char, typename OutputIt, typename Duration>
 void write_fractional_seconds(OutputIt& out, Duration d, int precision = -1) {
-  constexpr auto num_fractional_digits =
+  // How many fractional digits this period needs (C++20 chrono, capped at 18).
+  constexpr int period_digits =
       count_fractional_digits<Duration::period::num,
                               Duration::period::den>::value;
 
-  using subsecond_precision = std::chrono::duration<
-      typename std::common_type<typename Duration::rep,
-                                std::chrono::seconds::rep>::type,
-      std::ratio<1, pow10(num_fractional_digits)>>;
+  // Convert the sub-second residual into an integer with `period_digits`
+  // places after the decimal (e.g. milliseconds → thousandths of a second).
+  using subsec_rep = typename std::common_type<typename Duration::rep,
+                                               std::chrono::seconds::rep>::type;
+  using subsec_duration =
+      std::chrono::duration<subsec_rep, std::ratio<1, pow10(period_digits)>>;
 
-  const auto fractional = d - detail::duration_cast<std::chrono::seconds>(d);
-  const auto subseconds =
-      std::chrono::treat_as_floating_point<
-          typename subsecond_precision::rep>::value
-          ? fractional.count()
-          : detail::duration_cast<subsecond_precision>(fractional).count();
-  auto n = static_cast<uint32_or_64_or_128_t<long long>>(subseconds);
-  const int num_digits = count_digits(n);
+  const auto whole_seconds = detail::duration_cast<std::chrono::seconds>(d);
+  const auto residual = d - whole_seconds;
+  const auto subsec_count =
+      std::chrono::treat_as_floating_point<subsec_rep>::value
+          ? residual.count()
+          : detail::duration_cast<subsec_duration>(residual).count();
 
-  int leading_zeroes = (std::max)(0, num_fractional_digits - num_digits);
+  auto digits_value =
+      static_cast<uint32_or_64_or_128_t<long long>>(subsec_count);
+  const int printed_digits = count_digits(digits_value);
+  // Zeros between the decimal point and the first non-zero digit of n.
+  int leading_zeros = (std::max)(0, period_digits - printed_digits);
+
+  if (precision == 0) return;  // "%.0S" → whole seconds only.
+
   if (precision < 0) {
+    // Default: emit the full fractional part for this period, if any.
     FMT_ASSERT(!std::is_floating_point<typename Duration::rep>::value, "");
-    if (std::ratio_less<typename subsecond_precision::period,
-                        std::chrono::seconds::period>::value) {
-      *out++ = '.';
-      out = detail::fill_n(out, leading_zeroes, '0');
-      out = format_decimal<Char>(out, n, num_digits);
-    }
-  } else if (precision > 0) {
-    *out++ = '.';
-    leading_zeroes = min_of(leading_zeroes, precision);
-    int remaining = precision - leading_zeroes;
-    out = detail::fill_n(out, leading_zeroes, '0');
-    if (remaining < num_digits) {
-      int num_truncated_digits = num_digits - remaining;
-      n /= to_unsigned(pow10(to_unsigned(num_truncated_digits)));
-      if (n != 0) out = format_decimal<Char>(out, n, remaining);
-      return;
-    }
-    if (n != 0) {
-      out = format_decimal<Char>(out, n, num_digits);
-      remaining -= num_digits;
-    }
-    out = detail::fill_n(out, remaining, '0');
+    constexpr bool has_fraction =
+        std::ratio_less<typename subsec_duration::period,
+                        std::chrono::seconds::period>::value;
+    if (!has_fraction) return;  // Period is whole seconds or coarser.
+    *out++ = static_cast<Char>('.');
+    out = detail::fill_n(out, leading_zeros, '0');
+    out = format_decimal<Char>(out, digits_value, printed_digits);
+    return;
   }
+
+  // Explicit precision: write exactly `precision` digits after '.'.
+  *out++ = static_cast<Char>('.');
+  leading_zeros = min_of(leading_zeros, precision);
+  int remaining = precision - leading_zeros;
+  out = detail::fill_n(out, leading_zeros, '0');
+
+  if (remaining < printed_digits) {
+    // Truncate least-significant digits to fit `remaining`.
+    const int drop = printed_digits - remaining;
+    digits_value /= to_unsigned(pow10(to_unsigned(drop)));
+    if (digits_value != 0)
+      out = format_decimal<Char>(out, digits_value, remaining);
+    return;
+  }
+
+  // Digits fit: write them and pad with trailing zeros if needed.
+  if (digits_value != 0) {
+    out = format_decimal<Char>(out, digits_value, printed_digits);
+    remaining -= printed_digits;
+  }
+  out = detail::fill_n(out, remaining, '0');
 }
 
 // Format subseconds which are given as a floating point type with an
