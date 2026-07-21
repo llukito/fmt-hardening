@@ -2066,9 +2066,33 @@ template <typename Char> class digit_grouping {
   }
 };
 
+// Integer prefixes are packed into an unsigned word:
+//   bits  0..23  up to 3 characters, least-significant byte first
+//   bits 24..31  number of characters (size)
+// Emission order is low byte first, so a sign placed first by
+// make_write_int_arg stays ahead of any later "0" / "0x" / "0b" prefix
+// (e.g. negative octal is "-052", not "0-52").
 FMT_CONSTEXPR inline void prefix_append(unsigned& prefix, unsigned value) {
   prefix |= prefix != 0 ? value << 8 : value;
   prefix += (1u + (value > 0xff ? 1 : 0)) << 24;
+}
+
+// '#' on octal must make the output start with '0'. Skip when:
+//   - value is 0 (the digit string is already "0"), or
+//   - precision > num_digits (zero-padding will supply a leading 0).
+// Otherwise append a single '0' to the prefix (after any sign).
+FMT_CONSTEXPR inline void maybe_add_octal_prefix(unsigned& prefix, bool alt,
+                                                int precision, int num_digits,
+                                                bool nonzero) {
+  if (alt && nonzero && precision <= num_digits) prefix_append(prefix, '0');
+}
+
+// Write the character bytes stored in prefix (low 24 bits; see prefix_append).
+template <typename Char, typename It>
+FMT_CONSTEXPR auto write_int_prefix(It it, unsigned prefix) -> It {
+  for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
+    *it++ = static_cast<Char>(p & 0xff);
+  return it;
 }
 
 // Writes an integer as a character, treating chars as unsigned.
@@ -2092,27 +2116,25 @@ auto write_int(OutputIt out, UInt value, unsigned prefix,
   default: FMT_ASSERT(false, ""); FMT_FALLTHROUGH;
   case presentation_type::none:
   case presentation_type::dec:
-    num_digits = count_digits(value);
+    num_digits = count_digits(value);  // base 10
     format_decimal<char>(appender(buffer), value, num_digits);
     break;
   case presentation_type::hex:
     if (specs.alt())
       prefix_append(prefix, unsigned(specs.upper() ? 'X' : 'x') << 8 | '0');
-    num_digits = count_digits<4>(value);
+    num_digits = count_digits<4>(value);  // base 16: 4 bits per digit
     format_base2e<char>(4, appender(buffer), value, num_digits, specs.upper());
     break;
   case presentation_type::oct:
-    num_digits = count_digits<3>(value);
-    // Octal prefix '0' is counted as a digit, so only add it if precision
-    // is not greater than the number of digits.
-    if (specs.alt() && specs.precision <= num_digits && value != 0)
-      prefix_append(prefix, '0');
+    num_digits = count_digits<3>(value);  // base 8: 3 bits per digit
+    maybe_add_octal_prefix(prefix, specs.alt(), specs.precision, num_digits,
+                           value != 0);
     format_base2e<char>(3, appender(buffer), value, num_digits);
     break;
   case presentation_type::bin:
     if (specs.alt())
       prefix_append(prefix, unsigned(specs.upper() ? 'B' : 'b') << 8 | '0');
-    num_digits = count_digits<1>(value);
+    num_digits = count_digits<1>(value);  // base 2: 1 bit per digit
     format_base2e<char>(1, appender(buffer), value, num_digits);
     break;
   case presentation_type::chr:
@@ -2123,8 +2145,7 @@ auto write_int(OutputIt out, UInt value, unsigned prefix,
                   to_unsigned(grouping.count_separators(num_digits));
   return write_padded<Char, align::right>(
       out, specs, size, size, [&](reserve_iterator<OutputIt> it) {
-        for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
-          *it++ = static_cast<Char>(p & 0xff);
+        it = write_int_prefix<Char>(it, prefix);
         return grouping.apply(it, string_view(buffer.data(), buffer.size()));
       });
 }
@@ -2147,6 +2168,9 @@ template <typename UInt> struct write_int_arg {
   unsigned prefix;
 };
 
+// Build abs_value + optional sign prefix. The sign occupies the low byte of
+// prefix so write_int_prefix emits it before any alternate-form base prefix
+// appended later ('0', "0x", "0b") — signed octal is "-052", not "0-52".
 template <typename T>
 FMT_CONSTEXPR auto make_write_int_arg(T value, sign s)
     -> write_int_arg<uint32_or_64_or_128_t<T>> {
@@ -2230,11 +2254,10 @@ FMT_CONSTEXPR FMT_INLINE auto write_int(OutputIt out, write_int_arg<T> arg,
     break;
   case presentation_type::oct: {
     begin = do_format_base2e(3, buffer, abs_value, buffer_size);
-    // Octal prefix '0' is counted as a digit, so only add it if precision
-    // is not greater than the number of digits.
-    auto num_digits = end - begin;
-    if (specs.alt() && specs.precision <= num_digits && abs_value != 0)
-      prefix_append(prefix, '0');
+    // count_digits via pointer distance; base 8 is 3 bits per digit.
+    auto num_digits = static_cast<int>(end - begin);
+    maybe_add_octal_prefix(prefix, specs.alt(), specs.precision, num_digits,
+                           abs_value != 0);
     break;
   }
   case presentation_type::bin:
@@ -2248,21 +2271,19 @@ FMT_CONSTEXPR FMT_INLINE auto write_int(OutputIt out, write_int_arg<T> arg,
 
   // Write an integer in the format
   //   <left-padding><prefix><numeric-padding><digits><right-padding>
-  // prefix contains chars in three lower bytes and the size in the fourth byte.
+  // where prefix is the packed sign / base prefix (see prefix_append).
   int num_digits = static_cast<int>(end - begin);
   // Slightly faster check for specs.width == 0 && specs.precision == -1.
   if ((specs.width | (specs.precision + 1)) == 0) {
     auto it = reserve(out, to_unsigned(num_digits) + (prefix >> 24));
-    for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
-      *it++ = static_cast<Char>(p & 0xff);
+    it = write_int_prefix<Char>(it, prefix);
     return base_iterator(out, copy<Char>(begin, end, it));
   }
   auto sp = size_padding(num_digits, prefix, specs);
   unsigned padding = sp.padding;
   return write_padded<Char, align::right>(
       out, specs, sp.size, [=](reserve_iterator<OutputIt> it) {
-        for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
-          *it++ = static_cast<Char>(p & 0xff);
+        it = write_int_prefix<Char>(it, prefix);
         it = detail::fill_n(it, padding, static_cast<Char>('0'));
         return copy<Char>(begin, end, it);
       });
