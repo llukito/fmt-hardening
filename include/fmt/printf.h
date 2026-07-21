@@ -310,20 +310,78 @@ class printf_arg_formatter : public arg_formatter<Char> {
   }
 };
 
+// printf flags that may appear between '%' and the width field.
+// Collected as a set first, then applied so conflicts are resolved in one place
+// rather than depending on the order flags are seen in the format string.
+struct printf_flag_set {
+  bool left = false;   // '-'  left-justify within the field
+  bool plus = false;   // '+'  always print a sign for signed conversions
+  bool space = false;  // ' '  prefix a space if no sign would be written
+  bool zero = false;   // '0'  zero-pad (subject to later rules; see below)
+  bool hash = false;   // '#'  alternate form (0x, base prefix, etc.)
+};
+
+// Apply the type-independent flag set to specs.
+//
+// Conflict rules resolved here:
+//   • '+' wins over ' ' for the sign character (ISO C).
+//   • '-' and '0' may both be present; '0' is recorded as fill '0' and is
+//     finalized later by resolve_printf_padding once alignment can still change
+//     (negative dynamic width) and the argument type / precision are known.
+inline void apply_printf_flags(format_specs& specs, printf_flag_set f) {
+  if (f.plus)
+    specs.set_sign(sign::plus);
+  else if (f.space)
+    specs.set_sign(sign::space);
+
+  if (f.left) specs.set_align(align::left);
+  if (f.zero) specs.set_fill('0');
+  if (f.hash) specs.set_alt();
+}
+
+// Scan flag characters into a set, then apply them. Duplicate flags are
+// idempotent ('--', '++', '00', '##'). Non-flag characters end the scan and
+// are left for the width / precision / type parsers.
 template <typename Char>
 void parse_flags(format_specs& specs, const Char*& it, const Char* end) {
+  printf_flag_set flags;
   for (; it != end; ++it) {
     switch (*it) {
-    case '-': specs.set_align(align::left); break;
-    case '+': specs.set_sign(sign::plus); break;
-    case '0': specs.set_fill('0'); break;
-    case ' ':
-      if (specs.sign() != sign::plus) specs.set_sign(sign::space);
-      break;
-    case '#': specs.set_alt(); break;
-    default:  return;
+    case '-': flags.left = true; break;
+    case '+': flags.plus = true; break;
+    case ' ': flags.space = true; break;
+    case '0': flags.zero = true; break;
+    case '#': flags.hash = true; break;
+    default:
+      apply_printf_flags(specs, flags);
+      return;
     }
   }
+  apply_printf_flags(specs, flags);
+}
+
+// Finalize the '0' zero-pad flag once width, precision, alignment, and the
+// argument type are all known. Call after parse_header (and dynamic width,
+// which may set left alignment for a negative width) and precision parsing.
+//
+// '0' is ignored when any of these hold (ISO C / common printf practice):
+//   • field is left-justified ('-' or negative width),
+//   • a precision is specified for an integer conversion,
+//   • the argument is not arithmetic (e.g. strings, pointers as %s).
+// Otherwise '0' selects numeric alignment so zeros follow the sign / base
+// prefix rather than preceding them.
+template <typename Char>
+void resolve_printf_padding(format_specs& specs, type arg_type) {
+  if (specs.fill_unit<Char>() != '0') return;
+
+  const bool left = specs.align() == align::left;
+  const bool int_precision =
+      specs.precision >= 0 && is_integral_type(arg_type);
+  if (!left && !int_precision && is_arithmetic_type(arg_type)) {
+    specs.set_align(align::numeric);
+    return;
+  }
+  specs.set_fill(' ');
 }
 
 template <typename Char, typename GetArg>
@@ -476,12 +534,6 @@ void vprintf(buffer<Char>& buf, basic_string_view<Char> format,
     }
 
     auto arg = get_arg(arg_index);
-    // For d, i, o, u, x and X conversion specifiers, if a precision is
-    // specified, the '0' flag is ignored
-    if (specs.precision >= 0 && is_integral_type(arg.type())) {
-      // Ignore '0' for non-numeric types or if '-' present.
-      specs.set_fill(' ');
-    }
     if (specs.precision >= 0 && arg.type() == type::cstring_type) {
       auto str = arg.visit(get_cstring<Char>());
       auto str_end = str + specs.precision;
@@ -491,14 +543,8 @@ void vprintf(buffer<Char>& buf, basic_string_view<Char> format,
       arg = sv;
     }
     if (specs.alt() && arg.visit(is_zero_int())) specs.clear_alt();
-    if (specs.fill_unit<Char>() == '0') {
-      if (is_arithmetic_type(arg.type()) && specs.align() != align::left) {
-        specs.set_align(align::numeric);
-      } else {
-        // Ignore '0' flag for non-numeric types or if '-' flag is also present.
-        specs.set_fill(' ');
-      }
-    }
+    // Resolve '-' / precision / type interactions with the '0' flag.
+    resolve_printf_padding<Char>(specs, arg.type());
 
     // Parse length and convert the argument to the required type.
     c = it != end ? *it++ : 0;

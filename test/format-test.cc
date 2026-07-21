@@ -953,7 +953,11 @@ TEST(format_test, hash_flag) {
   EXPECT_EQ(fmt::format("{0:#x}", -0x42), "-0x42");
   EXPECT_EQ(fmt::format("{0:#o}", 0), "0");
   EXPECT_EQ(fmt::format("{0:#o}", 042), "042");
+  // Sign is emitted before the alternate-form '0' prefix (and before 0x/0b).
   EXPECT_EQ(fmt::format("{0:#o}", -042), "-042");
+  EXPECT_EQ(fmt::format("{:#o}", -42), "-052");
+  EXPECT_EQ(fmt::format("{:+#o}", 42), "+052");
+  EXPECT_EQ(fmt::format("{:#08o}", -42), "-0000052");
   EXPECT_EQ(fmt::format("{0:#}", 42u), "42");
   EXPECT_EQ(fmt::format("{0:#x}", 0x42u), "0x42");
   EXPECT_EQ(fmt::format("{0:#o}", 042u), "042");

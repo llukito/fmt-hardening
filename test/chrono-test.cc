@@ -424,18 +424,66 @@ TEST(chrono_test, format_default) {
 
 TEST(chrono_test, duration_align) {
   auto s = std::chrono::seconds(42);
+  auto long_s = std::chrono::seconds(12345);
+  auto ms = std::chrono::milliseconds(1234);
+
+  // Default representation (count + unit): fill/align/width on the whole string.
   EXPECT_EQ(fmt::format("{:5}", s), "42s  ");
   EXPECT_EQ(fmt::format("{:{}}", s, 5), "42s  ");
+  EXPECT_EQ(fmt::format("{:<5}", s), "42s  ");
   EXPECT_EQ(fmt::format("{:>5}", s), "  42s");
+  EXPECT_EQ(fmt::format("{:^5}", s), " 42s ");
   EXPECT_EQ(fmt::format("{:*^7}", s), "**42s**");
-  EXPECT_EQ(fmt::format("{:12%H:%M:%S}", std::chrono::seconds(12345)),
-            "03:25:45    ");
-  EXPECT_EQ(fmt::format("{:>12%H:%M:%S}", std::chrono::seconds(12345)),
-            "    03:25:45");
-  EXPECT_EQ(fmt::format("{:~^12%H:%M:%S}", std::chrono::seconds(12345)),
-            "~~03:25:45~~");
-  EXPECT_EQ(fmt::format("{:{}%H:%M:%S}", std::chrono::seconds(12345), 12),
-            "03:25:45    ");
+  EXPECT_EQ(fmt::format("{:*>5}", s), "**42s");
+  EXPECT_EQ(fmt::format("{:*<5}", s), "42s**");
+  EXPECT_EQ(fmt::format("{:0>5}", s), "0042s");
+  EXPECT_EQ(fmt::format("{:*>{}}", s, 8), "*****42s");
+
+  // Chrono time specs (%H:%M:%S / %T / %R): same outer padding rules.
+  EXPECT_EQ(fmt::format("{:12%H:%M:%S}", long_s), "03:25:45    ");
+  EXPECT_EQ(fmt::format("{:>12%H:%M:%S}", long_s), "    03:25:45");
+  EXPECT_EQ(fmt::format("{:~^12%H:%M:%S}", long_s), "~~03:25:45~~");
+  EXPECT_EQ(fmt::format("{:*>12%H:%M:%S}", long_s), "****03:25:45");
+  EXPECT_EQ(fmt::format("{:0>12%H:%M:%S}", long_s), "000003:25:45");
+  EXPECT_EQ(fmt::format("{:{}%H:%M:%S}", long_s, 12), "03:25:45    ");
+  EXPECT_EQ(fmt::format("{:*>12%T}", long_s), "****03:25:45");
+  EXPECT_EQ(fmt::format("{:*>8%R}", long_s), "***03:25");
+
+  // Fractional %S and default floating: width pads the full field, not digits.
+  EXPECT_EQ(fmt::format("{:8%S}", ms), "01.234  ");
+  EXPECT_EQ(fmt::format("{:>8%S}", ms), "  01.234");
+  EXPECT_EQ(fmt::format("{:*^10%S}", ms), "**01.234**");
+  EXPECT_EQ(fmt::format("{:0>8%S}", ms), "0001.234");
+  EXPECT_EQ(fmt::format("{:*>12.2%S}", ms), "*******01.23");
+
+  // %Q (value) and %q (unit) are padded as complete content strings.
+  EXPECT_EQ(fmt::format("{:10%Q}", long_s), "12345     ");
+  EXPECT_EQ(fmt::format("{:>10%Q}", long_s), "     12345");
+  EXPECT_EQ(fmt::format("{:*^10%Q}", long_s), "**12345***");
+  EXPECT_EQ(fmt::format("{:0>8%Q}", s), "00000042");
+  EXPECT_EQ(fmt::format("{:5%q}", s), "s    ");
+  EXPECT_EQ(fmt::format("{:*>5%q}", s), "****s");
+  EXPECT_EQ(fmt::format("{:10%Q%q}", long_s), "12345s    ");
+  EXPECT_EQ(fmt::format("{:*>12%Q %q}", long_s), "*****12345 s");
+
+  // Negative durations: sign is part of the content; outer fill pads around it.
+  auto neg = std::chrono::seconds(-42);
+  EXPECT_EQ(fmt::format("{:8}", neg), "-42s    ");
+  EXPECT_EQ(fmt::format("{:>8}", neg), "    -42s");
+  EXPECT_EQ(fmt::format("{:*^8}", neg), "**-42s**");
+  EXPECT_EQ(fmt::format("{:0>10}", neg), "000000-42s");
+  EXPECT_EQ(fmt::format("{:*>10%S}", std::chrono::seconds(-5)), "*******-05");
+
+  // Width smaller than content: no truncation, no padding.
+  EXPECT_EQ(fmt::format("{:2}", s), "42s");
+  EXPECT_EQ(fmt::format("{:*>2}", s), "42s");
+  EXPECT_EQ(fmt::format("{:1%H:%M:%S}", long_s), "03:25:45");
+
+  // UTF-8 unit (µs): width is in display columns, not code units.
+  auto us = std::chrono::microseconds(42);
+  EXPECT_EQ(fmt::format("{:10}", us), "42µs      ");
+  EXPECT_EQ(fmt::format("{:>10}", us), "      42µs");
+  EXPECT_EQ(fmt::format("{:*>10}", us), "******42µs");
 }
 
 TEST(chrono_test, tm_align) {

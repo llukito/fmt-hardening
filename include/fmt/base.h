@@ -2314,11 +2314,45 @@ template <typename Context> class value {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Argument packing: how types and values are stored in a format_args view
+// ---------------------------------------------------------------------------
+//
+// Each call packs arguments into a format_arg_store, then decays to a
+// basic_format_args view: a 64-bit descriptor + a pointer into the store.
+//
+// Descriptor (ullong) bit layout:
+//
+//   bit 63  is_unpacked_bit   0 → types live in the descriptor (packed)
+//                             1 → types live with each arg; low bits = count
+//   bit 62  has_named_args_bit  set when the store has named-arg metadata
+//   bits 0..61  type pack     only in packed mode: 4 bits per argument,
+//                             arg 0 in the least-significant nibble
+//
+//   63 62 61 .............................. 0
+//   U  N  [  type nibbles: arg0 at LSB  ... ]
+//
+// type needs 4 bits (enum values 0..15). Two flag bits leave 62 type bits
+// → at most 15 packed arguments. Beyond that, the store is "unpacked": each
+// slot is a full basic_format_arg and the descriptor only holds the count.
+//
+// Values (always): a contiguous array of either value<Context> (packed) or
+// basic_format_arg<Context> (unpacked). Named-arg metadata, when present, is
+// stashed in a slot immediately before the first real argument so the view
+// can recover it via pointer[-1] without growing the view object.
+//
 enum { packed_arg_bits = 4 };
-// Maximum number of arguments with packed types.
-enum { max_packed_args = 62 / packed_arg_bits };
+enum { descriptor_bits = 64 };
+enum { descriptor_flag_bits = 2 };  // is_unpacked + has_named_args
+enum {
+  max_packed_args = (descriptor_bits - descriptor_flag_bits) / packed_arg_bits
+};  // 15
 enum : ullong { is_unpacked_bit = 1ULL << 63 };
 enum : ullong { has_named_args_bit = 1ULL << 62 };
+// Mask of all descriptor flag bits (for recovering the unpacked arg count).
+enum : ullong {
+  descriptor_flag_mask = is_unpacked_bit | has_named_args_bit
+};
 
 template <typename It, typename T, typename Enable = void>
 struct is_output_iterator : std::false_type {};
@@ -2331,28 +2365,45 @@ struct is_output_iterator<
     enable_if_t<std::is_assignable<decltype(*std::declval<decay_t<It>&>()++),
                                    T>::value>> : std::true_type {};
 
-template <typename> constexpr auto encode_types() -> ullong { return 0; }
+// Pack argument types into a descriptor word, 4 bits each.
+// Recursion builds: arg0 in the low nibble, arg1 in the next, etc.
+//   pack_arg_types<Ctx, int, char>() → (char_type << 4) | int_type
+template <typename> constexpr auto pack_arg_types() -> ullong { return 0; }
 
-template <typename Context, typename First, typename... T>
-constexpr auto encode_types() -> ullong {
+template <typename Context, typename First, typename... Rest>
+constexpr auto pack_arg_types() -> ullong {
   return unsigned(stored_type_constant<First, Context>::value) |
-         (encode_types<Context, T...>() << packed_arg_bits);
+         (pack_arg_types<Context, Rest...>() << packed_arg_bits);
 }
 
+// Build the descriptor for a fixed argument pack.
+// Packed: type nibbles only (has_named_args is OR'd on later by format_args).
+// Unpacked: is_unpacked_bit | NUM_ARGS.
 template <typename Context, typename... T, size_t NUM_ARGS = sizeof...(T)>
 constexpr auto make_descriptor() -> ullong {
-  return NUM_ARGS <= max_packed_args ? encode_types<Context, T...>()
+  return NUM_ARGS <= max_packed_args ? pack_arg_types<Context, T...>()
                                      : is_unpacked_bit | NUM_ARGS;
 }
 
+// Per-slot storage type for the argument array:
+//   packed   → value only (type is in the descriptor)
+//   unpacked → full basic_format_arg (type is beside the value)
 template <typename Context, int NUM_ARGS>
-using arg_t = conditional_t<NUM_ARGS <= max_packed_args, value<Context>,
-                            basic_format_arg<Context>>;
+using arg_value_type =
+    conditional_t<NUM_ARGS <= max_packed_args, value<Context>,
+                  basic_format_arg<Context>>;
 
+// Argument array plus named-arg table. Layout:
+//
+//   args[0]     : named_args header {pointer, size}  (not a real format arg)
+//   args[1..N]  : the N user arguments
+//   named_args  : name → index map
+//
+// basic_format_args stores a pointer to args[1]; named metadata is recovered
+// as pointer[-1]. This keeps the type-erased view two words large.
 template <typename Context, int NUM_ARGS, int NUM_NAMED_ARGS, ullong DESC>
 struct named_arg_store {
-  // args_[0].named_args points to named_args to avoid bloating format_args.
-  arg_t<Context, NUM_ARGS> args[NUM_ARGS + 1u];
+  arg_value_type<Context, NUM_ARGS> args[NUM_ARGS + 1u];
   named_arg_info<typename Context::char_type> named_args[NUM_NAMED_ARGS + 0u];
 
   template <typename... T>
@@ -2374,19 +2425,25 @@ struct named_arg_store {
   named_arg_store(const named_arg_store& rhs) = delete;
   auto operator=(const named_arg_store& rhs) -> named_arg_store& = delete;
   auto operator=(named_arg_store&& rhs) -> named_arg_store& = delete;
-  operator const arg_t<Context, NUM_ARGS>*() const { return args + 1; }
+  // Decay to a pointer at the first real argument (past the named-args header).
+  operator const arg_value_type<Context, NUM_ARGS>*() const { return args + 1; }
 };
 
 // An array of references to arguments. It can be implicitly converted to
 // `basic_format_args` for passing into type-erased formatting functions
 // such as `vformat`. It is a plain struct to reduce binary size in debug mode.
+//
+// DESC is the compile-time descriptor (packed type nibbles or is_unpacked|N).
+// NUM_NAMED_ARGS selects the storage shape:
+//   0 → plain array of arg_value_type
+//   >0 → named_arg_store (header slot + named_args table)
 template <typename Context, int NUM_ARGS, int NUM_NAMED_ARGS, ullong DESC>
 struct format_arg_store {
   // +1 to workaround a bug in gcc 7.5 that causes duplicated-branches warning.
-  using type =
-      conditional_t<NUM_NAMED_ARGS == 0,
-                    arg_t<Context, NUM_ARGS>[max_of<size_t>(1, NUM_ARGS)],
-                    named_arg_store<Context, NUM_ARGS, NUM_NAMED_ARGS, DESC>>;
+  using type = conditional_t<
+      NUM_NAMED_ARGS == 0,
+      arg_value_type<Context, NUM_ARGS>[max_of<size_t>(1, NUM_ARGS)],
+      named_arg_store<Context, NUM_ARGS, NUM_NAMED_ARGS, DESC>>;
   type args;
 };
 
@@ -2573,18 +2630,14 @@ template <typename Context> class basic_format_arg {
  */
 template <typename Context> class basic_format_args {
  private:
-  // A descriptor that contains information about formatting arguments.
-  // If the number of arguments is less or equal to max_packed_args then
-  // argument types are passed in the descriptor. This reduces binary code size
-  // per formatting function call.
+  // desc_ + (values_|args_) is the type-erased view of a format_arg_store.
+  // See the "Argument packing" comment above for the descriptor bit layout.
   ullong desc_;
   union {
-    // If is_packed() returns true then argument values are stored in values_;
-    // otherwise they are stored in args_. This is done to improve cache
-    // locality and reduce compiled code size since storing larger objects
-    // may require more code (at least on x86-64) even if the same amount of
-    // data is actually copied to stack. It saves ~10% on the bloat test.
+    // Packed: values only (types are in desc_). Smaller slots → less code to
+    // copy on the call path (~10% on the bloat test).
     const detail::value<Context>* values_;
+    // Unpacked: full basic_format_arg (type beside each value).
     const basic_format_arg<Context>* args_;
   };
 
@@ -2595,6 +2648,7 @@ template <typename Context> class basic_format_args {
     return (desc_ & detail::has_named_args_bit) != 0;
   }
 
+  // Decode the type nibble for argument `index` from a packed descriptor.
   FMT_CONSTEXPR auto type(int index) const -> detail::type {
     int shift = index * detail::packed_arg_bits;
     unsigned mask = (1 << detail::packed_arg_bits) - 1;
@@ -2605,24 +2659,28 @@ template <typename Context> class basic_format_args {
   using store =
       detail::format_arg_store<Context, NUM_ARGS, NUM_NAMED_ARGS, DESC>;
 
+  // OR the named-args flag onto a store's compile-time descriptor.
+  static constexpr auto store_desc(ullong desc, int num_named) -> ullong {
+    return desc | (num_named != 0 ? +detail::has_named_args_bit : 0);
+  }
+
  public:
   using format_arg = basic_format_arg<Context>;
 
   constexpr basic_format_args() : desc_(0), args_(nullptr) {}
 
-  /// Constructs a `basic_format_args` object from `format_arg_store`.
+  /// Constructs a `basic_format_args` object from `format_arg_store` (packed).
   template <int NUM_ARGS, int NUM_NAMED_ARGS, ullong DESC,
             FMT_ENABLE_IF(NUM_ARGS <= detail::max_packed_args)>
   constexpr FMT_ALWAYS_INLINE basic_format_args(
       const store<NUM_ARGS, NUM_NAMED_ARGS, DESC>& s)
-      : desc_(DESC | (NUM_NAMED_ARGS != 0 ? +detail::has_named_args_bit : 0)),
-        values_(s.args) {}
+      : desc_(store_desc(DESC, NUM_NAMED_ARGS)), values_(s.args) {}
 
+  /// Constructs a `basic_format_args` object from `format_arg_store` (unpacked).
   template <int NUM_ARGS, int NUM_NAMED_ARGS, ullong DESC,
             FMT_ENABLE_IF(NUM_ARGS > detail::max_packed_args)>
   constexpr basic_format_args(const store<NUM_ARGS, NUM_NAMED_ARGS, DESC>& s)
-      : desc_(DESC | (NUM_NAMED_ARGS != 0 ? +detail::has_named_args_bit : 0)),
-        args_(s.args) {}
+      : desc_(store_desc(DESC, NUM_NAMED_ARGS)), args_(s.args) {}
 
   /// Constructs a `basic_format_args` object from a dynamic list of arguments.
   constexpr basic_format_args(const format_arg* args, int count,
@@ -2638,6 +2696,7 @@ template <typename Context> class basic_format_args {
       if (unsigned(id) < unsigned(max_size())) arg = args_[id];
       return arg;
     }
+    // Packed: type from descriptor nibble, value from the value array.
     if (unsigned(id) >= detail::max_packed_args) return arg;
     arg.type_ = type(id);
     if (arg.type_ != detail::type::none_type) arg.value_ = values_[id];
@@ -2653,6 +2712,7 @@ template <typename Context> class basic_format_args {
   template <typename Char>
   FMT_CONSTEXPR auto get_id(basic_string_view<Char> name) const -> int {
     if (!has_named_args()) return -1;
+    // Named-arg table lives in the header slot immediately before arg 0.
     const auto& named_args =
         (is_packed() ? values_[-1] : args_[-1].value_).named_args;
     for (size_t i = 0; i < named_args.size; ++i) {
@@ -2662,8 +2722,11 @@ template <typename Context> class basic_format_args {
   }
 
   auto max_size() const -> int {
+    // Packed stores don't record the exact count in desc_; the type nibbles
+    // of unused slots are 0 (none_type). Unpacked stores keep the count in
+    // the low bits under the flag mask.
     return int(is_packed() ? ullong(detail::max_packed_args)
-                           : desc_ & ~detail::is_unpacked_bit);
+                           : desc_ & ~detail::descriptor_flag_mask);
   }
 };
 
