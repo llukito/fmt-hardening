@@ -2056,6 +2056,34 @@ struct formatter<year_month_day, Char> : private formatter<std::tm, Char> {
   }
 };
 
+namespace detail {
+
+// Applies fill, align, and width to a pre-formatted chrono string.
+//
+// Model: format the duration (or other chrono value) into plain content first,
+// then pad the whole result as a string. Precision, localization, and chrono
+// conversion specs affect only the content stage — never the outer padding.
+//
+// When align is omitted (align::none), padding is left-aligned (fmt's chrono
+// default; matches existing duration/tm tests). Explicit < > ^ and custom fills
+// behave as for ordinary strings.
+template <typename Char, typename OutputIt>
+auto write_chrono_padded(OutputIt out, basic_string_view<Char> content,
+                         const format_specs& specs) -> OutputIt {
+  if (specs.width <= 0) return copy<Char>(content, out);
+
+  // Only width / fill / align participate in outer padding. Stripping other
+  // fields (precision, localized, type, …) keeps padding independent of how
+  // the content was produced.
+  format_specs pad;
+  pad.width = specs.width;
+  pad.set_align(specs.align());
+  pad.copy_fill_from(specs);
+  return write(out, content, pad);
+}
+
+}  // namespace detail
+
 template <typename Rep, typename Period, typename Char>
 struct formatter<std::chrono::duration<Rep, Period>, Char> {
  private:
@@ -2065,6 +2093,11 @@ struct formatter<std::chrono::duration<Rep, Period>, Char> {
   basic_string_view<Char> fmt_;
 
  public:
+  // chrono_format_spec:
+  //   [[fill]align][width]["." precision]["L"][chrono_specs]
+  //
+  // fill/align/width apply to the entire formatted duration (value+unit or
+  // chrono_specs result), not to individual conversion fields.
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
     auto it = ctx.begin(), end = ctx.end();
     if (it == end || *it == '}') return it;
@@ -2097,27 +2130,30 @@ struct formatter<std::chrono::duration<Rep, Period>, Char> {
       -> decltype(ctx.out()) {
     auto specs = specs_;
     auto precision = specs.precision;
-    specs.precision = -1;
-    auto begin = fmt_.begin(), end = fmt_.end();
-    // As a possible future optimization, we could avoid extra copying if width
-    // is not specified.
-    auto buf = basic_memory_buffer<Char>();
-    auto out = basic_appender<Char>(buf);
     detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
                                 ctx);
     detail::handle_dynamic_spec(specs.dynamic_precision(), precision,
                                 precision_ref_, ctx);
+
+    // Stage 1: render duration content with no outer fill/width.
+    auto buf = basic_memory_buffer<Char>();
+    auto out = basic_appender<Char>(buf);
+    auto begin = fmt_.begin(), end = fmt_.end();
     if (begin == end || *begin == '}') {
+      // Default: count + unit (e.g. "42s", "1.50ms").
       out = detail::format_duration_value<Char>(out, d.count(), precision);
-      detail::format_duration_unit<Char, Period>(out);
+      out = detail::format_duration_unit<Char, Period>(out);
     } else {
+      // Chrono conversion specs: %H:%M:%S, %Q, %q, %T, …
       auto f =
           detail::duration_formatter<Char, Rep, Period>(out, d, ctx.locale());
       f.precision = precision;
       f.localized = specs_.localized();
       detail::parse_chrono_format(begin, end, f);
     }
-    return detail::write(
+
+    // Stage 2: fill + align + width on the whole content string.
+    return detail::write_chrono_padded(
         ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
   }
 };
@@ -2163,17 +2199,18 @@ template <typename Char> struct formatter<std::tm, Char> {
   auto do_format(const std::tm& tm, FormatContext& ctx,
                  const Duration* subsecs) const -> decltype(ctx.out()) {
     auto specs = specs_;
-    auto buf = basic_memory_buffer<Char>();
-    auto out = basic_appender<Char>(buf);
     detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
                                 ctx);
 
+    // Stage 1: chrono content; stage 2: same outer fill/align/width as duration.
+    auto buf = basic_memory_buffer<Char>();
+    auto out = basic_appender<Char>(buf);
     auto loc_ref = specs.localized() ? ctx.locale() : locale_ref();
     detail::get_locale loc(static_cast<bool>(loc_ref), loc_ref);
     auto w = detail::tm_writer<basic_appender<Char>, Char, Duration>(
         loc, out, tm, subsecs);
     detail::parse_chrono_format(fmt_.begin(), fmt_.end(), w);
-    return detail::write(
+    return detail::write_chrono_padded(
         ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
   }
 
