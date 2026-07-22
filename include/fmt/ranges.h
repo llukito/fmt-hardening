@@ -293,6 +293,9 @@ template <typename FormatContext> struct format_tuple_element {
 //   set:                                {1, 2, 3}
 //   tuple / pair:                       (1, 2, 3)
 //
+// The 'n' specifier (on both range and tuple formatters) clears brackets only;
+// the separator stays ", " so "{:n}" is "1, 2, 3" for either.
+//
 // fmt::join is different: no brackets; the separator is the one passed to
 // join() (not this helper). See join_view.
 template <typename Char>
@@ -327,7 +330,9 @@ template <typename T, typename C> struct is_tuple_formattable {
 };
 
 // Formats tuple-like types as (elem, elem, …) with ", " between elements.
-// Use set_brackets / set_separator to override; the 'n' specifier clears both.
+// Use set_brackets / set_separator to override. The 'n' specifier clears the
+// brackets only (same as range_formatter), so "{:n}" on (1, 2, 3) is "1, 2, 3"
+// — not "123". The separator is left as ", " unless set_separator is used.
 template <typename Tuple, typename Char>
 struct formatter<Tuple, Char,
                  enable_if_t<fmt::is_tuple_like<Tuple>::value &&
@@ -348,8 +353,8 @@ struct formatter<Tuple, Char,
     auto end = ctx.end();
     if (it != end && detail::to_ascii(*it) == 'n') {
       ++it;
+      // Match range 'n': drop surrounding brackets, keep the element separator.
       this->set_brackets({}, {});
-      this->set_separator({});
     }
     if (it != end && *it != '}') report_error("invalid format specifier");
     ctx.advance_to(it);
@@ -402,7 +407,8 @@ struct range_formatter;
 // Formats a range as [elem, elem, …] with ", " between elements by default.
 // Element formatters get debug format enabled when no element specs are given,
 // so strings appear quoted (e.g. ["a", "b"]). Sets use {} brackets instead
-// (configured by formatter<R> for set kinds). 'n' clears the brackets.
+// (configured by formatter<R> for set kinds). 'n' clears the brackets only
+// (separator stays ", "), same as for tuples: "{:n}" on [1, 2, 3] is "1, 2, 3".
 template <typename T, typename Char>
 struct range_formatter<
     T, Char,
@@ -411,7 +417,8 @@ struct range_formatter<
     : detail::separator_and_brackets<Char> {
  private:
   detail::range_formatter_type<Char, T> underlying_;
-  bool is_debug = false;
+  // True when the range is formatted as a single debug string via '{:?s}'.
+  bool as_debug_string_ = false;
 
   template <typename Output, typename It, typename Sentinel, typename U = T,
             FMT_ENABLE_IF(std::is_same<U, Char>::value)>
@@ -440,38 +447,65 @@ struct range_formatter<
     return underlying_;
   }
 
+  // Parses range-level specs then optional element specs:
+  //
+  //   {:}           default: [e0, e1, …], elements in debug form
+  //   {:n}          no brackets; separator stays ", "
+  //   {:s}          character ranges only: concatenate as "e0e1…"
+  //   {:?s}         character ranges only: one debug-escaped string of all
+  //                 elements (no brackets / separator)
+  //   {:…:elem}     after optional n, a ':' starts element format specs
+  //                 (e.g. {:n:#x} → 0x1, 0x2, 0x3)
+  //
+  // Element debug form is on by default and turned off when element specs or
+  // '{:s}' are present.
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
     auto it = ctx.begin();
     auto end = ctx.end();
-    detail::maybe_set_debug_format(underlying_, true);
-    if (it == end) return underlying_.parse(ctx);
 
-    switch (detail::to_ascii(*it)) {
-    case 'n':
+    // Default: quote/escape string-like elements (["a", "b"]).
+    detail::maybe_set_debug_format(underlying_, true);
+
+    if (it == end || *it == '}') return underlying_.parse(ctx);
+
+    const char spec = detail::to_ascii(*it);
+
+    // '{:n}' — suppress surrounding brackets only.
+    if (spec == 'n') {
       this->set_brackets({}, {});
       ++it;
-      break;
-    case '?':
-      is_debug = true;
-      this->set_brackets({}, {});
-      ++it;
-      if (it == end || *it != 's') report_error("invalid format specifier");
-      FMT_FALLTHROUGH;
-    case 's':
+    }
+    // '{:s}' / '{:?s}' — format the whole range as a string (T must be Char).
+    else if (spec == 's' || spec == '?') {
+      const bool debug_string = (spec == '?');
+      if (debug_string) {
+        ++it;
+        if (it == end || *it != static_cast<Char>('s'))
+          report_error("invalid format specifier");
+      }
       if (!std::is_same<T, Char>::value)
         report_error("invalid format specifier");
-      if (!is_debug) {
+      ++it;  // consume 's'
+
+      if (debug_string) {
+        // '{:?s}': single escaped string of the character sequence.
+        as_debug_string_ = true;
+        this->set_brackets({}, {});
+      } else {
+        // '{:s}': opening/closing '"' with no separator; plain element chars.
         this->set_brackets(detail::string_literal<Char, '"'>{},
                            detail::string_literal<Char, '"'>{});
         this->set_separator({});
         detail::maybe_set_debug_format(underlying_, false);
       }
-      ++it;
       return it;
     }
+    // else: no range-level letter (e.g. '{::d}' starts with ':').
 
+    // Optional nested element specs after ':'.
     if (it != end && *it != '}') {
       if (*it != ':') report_error("invalid format specifier");
+      // Explicit element specs: do not force debug on elements.
       detail::maybe_set_debug_format(underlying_, false);
       ++it;
     }
@@ -486,7 +520,7 @@ struct range_formatter<
     auto out = ctx.out();
     auto it = detail::range_begin(range);
     auto end = detail::range_end(range);
-    if (is_debug) return write_debug_string(out, std::move(it), end);
+    if (as_debug_string_) return write_debug_string(out, std::move(it), end);
 
     out = detail::copy<Char>(this->opening_bracket_, out);
     int i = 0;
