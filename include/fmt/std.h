@@ -110,21 +110,83 @@ auto get_path_string(const std::filesystem::path& p,
   }
 }
 
+// Like needs_escape, but path-separator '\' is left alone so Windows paths
+// stay readable in debug form (e.g. "C:\foo" not "C:\\foo"). Quotes, controls
+// (\t \n \r, …), and other non-printables are still escaped.
+inline auto needs_path_escape(uint32_t cp) -> bool {
+  if (cp == '\\') return false;
+  return needs_escape(cp);
+}
+
+template <typename Char>
+auto find_path_escape(const Char* begin, const Char* end)
+    -> find_escape_result<Char> {
+  for (; begin != end; ++begin) {
+    uint32_t cp = static_cast<unsigned_char<Char>>(*begin);
+    if (sizeof(Char) == 1 && cp >= 0x80) continue;
+    if (needs_path_escape(cp)) return {begin, begin + 1, cp};
+  }
+  return {begin, nullptr, 0};
+}
+
+inline auto find_path_escape(const char* begin, const char* end)
+    -> find_escape_result<char> {
+  if FMT_CONSTEXPR20 (!use_utf8) return find_path_escape<char>(begin, end);
+  auto result = find_escape_result<char>{end, nullptr, 0};
+  for_each_codepoint(string_view(begin, to_unsigned(end - begin)),
+                     [&](uint32_t cp, string_view sv) {
+                       if (needs_path_escape(cp)) {
+                         result = {sv.begin(), sv.end(), cp};
+                         return false;
+                       }
+                       return true;
+                     });
+  return result;
+}
+
+// Quoted debug form of a path string: escapes controls/quotes like strings,
+// but does not double path-separator backslashes.
+template <typename Char, typename OutputIt>
+auto write_escaped_path_string(OutputIt out, basic_string_view<Char> str)
+    -> OutputIt {
+  *out++ = static_cast<Char>('"');
+  auto begin = str.begin(), end = str.end();
+  do {
+    auto escape = find_path_escape(begin, end);
+    out = copy<Char>(begin, escape.begin, out);
+    begin = escape.end;
+    if (!begin) break;
+    out = write_escaped_cp<OutputIt, Char>(out, escape);
+  } while (begin != end);
+  *out++ = static_cast<Char>('"');
+  return out;
+}
+
 template <typename Char, typename PathChar>
 void write_escaped_path(basic_memory_buffer<Char>& quoted,
                         const std::filesystem::path& p,
                         const std::basic_string<PathChar>& native) {
+  // Char = format output unit; PathChar = path::value_type (char or wchar_t).
   if constexpr (std::is_same_v<Char, char> &&
                 std::is_same_v<PathChar, wchar_t>) {
+    // Windows: native path is UTF-16/wchar_t, format output is char.
+    // Escape in wide form first, then convert the escaped text to UTF-8.
     auto buf = basic_memory_buffer<wchar_t>();
-    write_escaped_string<wchar_t>(std::back_inserter(buf), native);
+    write_escaped_path_string<wchar_t>(std::back_inserter(buf),
+                                       basic_string_view<wchar_t>(native));
     bool valid = to_utf8<wchar_t>::convert(quoted, {buf.data(), buf.size()});
     FMT_ASSERT(valid, "invalid utf16");
   } else if constexpr (std::is_same_v<Char, PathChar>) {
-    write_escaped_string<std::filesystem::path::value_type>(
-        std::back_inserter(quoted), native);
+    // Same width for path and output (typical POSIX char path, or wpath →
+    // wchar_t format): escape the native string directly.
+    write_escaped_path_string<Char>(std::back_inserter(quoted),
+                                    basic_string_view<Char>(native));
   } else {
-    write_escaped_string<Char>(std::back_inserter(quoted), p.string<Char>());
+    // Mismatched widths (e.g. char path into wchar_t format): convert the path
+    // to the output character type, then escape.
+    auto s = p.string<Char>();
+    write_escaped_path_string<Char>(std::back_inserter(quoted),
+                                    basic_string_view<Char>(s));
   }
 }
 
@@ -322,23 +384,42 @@ template <typename Char> struct formatter<std::filesystem::path, Char> {
     Char c = *it;
     if ((c >= '0' && c <= '9') || c == '{')
       it = detail::parse_width(it, end, specs_, width_ref_, ctx);
-    if (it != end && *it == '?') {
-      debug_ = true;
-      ++it;
+
+    // Optional '?' (debug) and 'g' (generic path separators). Independent;
+    // either order; each at most once in the format string. debug_ may already
+    // be set via set_debug_format (e.g. optional/range nesting) — still consume
+    // a format '?' so it is not reported as unknown. A second '?' / 'g' is left
+    // for the caller to reject.
+    bool saw_debug = false, saw_generic = false;
+    while (it != end) {
+      if (*it == '?' && !saw_debug) {
+        saw_debug = true;
+        debug_ = true;
+        ++it;
+      } else if (*it == 'g' && !saw_generic) {
+        saw_generic = true;
+        path_type_ = 'g';
+        ++it;
+      } else {
+        break;
+      }
     }
-    if (it != end && (*it == 'g')) path_type_ = detail::to_ascii(*it++);
     return it;
   }
 
   template <typename FormatContext>
   auto format(const std::filesystem::path& p, FormatContext& ctx) const {
     auto specs = specs_;
+    // 'g' selects generic (usually '/') separators; otherwise the native form.
     auto path_string =
         !path_type_ ? p.native()
                     : p.generic_string<std::filesystem::path::value_type>();
 
     detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
                                 ctx);
+    // Non-debug: write the path text as-is (no quoting or escaping). Width
+    // and fill apply to that raw string. Debug ('?'): build a quoted/escaped
+    // buffer first, then apply width/fill to the escaped form.
     if (!debug_) {
       auto s = detail::get_path_string<Char>(p, path_string);
       return detail::write(ctx.out(), basic_string_view<Char>(s), specs);
@@ -409,18 +490,35 @@ struct formatter<std::optional<T>, Char,
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) {
+    auto it = ctx.begin();
+    // Optional leading '?' on the optional itself (accepted for consistency
+    // with other formatters). It does not change optional's layout
+    // (always "optional(...)" / "none"); remaining specs are for T.
+    if (it != ctx.end() && *it == static_cast<Char>('?')) ++it;
+    ctx.advance_to(it);
+
+    // Always format the contained value in debug form so strings and chars
+    // stay quoted (optional("text")) and nested values stay readable. This
+    // is independent of whether the outer format used '?'; nested optionals
+    // and ranges rely on it. Presentation specs (e.g. 'x', precision, width)
+    // still go through to the underlying formatter via parse below.
     detail::maybe_set_debug_format(underlying_, true);
-    return underlying_.parse(ctx);
+    it = underlying_.parse(ctx);
+    // Re-apply: some presentation types (notably 's') clear debug on parse.
+    detail::maybe_set_debug_format(underlying_, true);
+    return it;
   }
 
   template <typename FormatContext>
   auto format(const std::optional<T>& opt, FormatContext& ctx) const
       -> decltype(ctx.out()) {
+    // Empty optional is always the bare word "none" — never quoted/escaped.
     if (!opt) return detail::write<Char>(ctx.out(), none);
 
     auto out = ctx.out();
     out = detail::write<Char>(out, optional);
     ctx.advance_to(out);
+    // Forward the (already-parsed) specs to the contained value.
     out = underlying_.format(*opt, ctx);
     return detail::write(out, ')');
   }

@@ -30,11 +30,29 @@ TEST(std_test, path) {
 
   EXPECT_EQ(fmt::format("{}", path("foo\"bar")), "foo\"bar");
   EXPECT_EQ(fmt::format("{:?}", path("foo\"bar")), "\"foo\\\"bar\"");
+  // Controls still escape in debug; path-separator backslash does not (below).
+  EXPECT_EQ(fmt::format("{:?}", path("foo\tbar")), "\"foo\\tbar\"");
+  EXPECT_EQ(fmt::format("{:?}", path("foo\nbar")), "\"foo\\nbar\"");
 
   EXPECT_EQ(fmt::format("{:g}", path("/usr/bin")), "/usr/bin");
+  // '?' and 'g' may appear in either order.
+  EXPECT_EQ(fmt::format("{:?g}", path("/usr/bin")), "\"/usr/bin\"");
+  EXPECT_EQ(fmt::format("{:g?}", path("/usr/bin")), "\"/usr/bin\"");
+  // 'g' with width/fill pads the (generic) path string.
+  EXPECT_EQ(fmt::format("{:*>12g}", path("foo")), "*********foo");  // 9+3
+  EXPECT_EQ(fmt::format("{:*>12?g}", path("foo")), "*******\"foo\"");  // 7+"foo"
+  EXPECT_EQ(fmt::format("{:*>12g?}", path("foo")), "*******\"foo\"");
 #  ifdef _WIN32
   EXPECT_EQ(fmt::format("{}", path("C:\\foo")), "C:\\foo");
   EXPECT_EQ(fmt::format("{:g}", path("C:\\foo")), "C:/foo");
+  // Debug leaves path-separator '\' unescaped for readability.
+  EXPECT_EQ(fmt::format("{:?}", path("C:\\foo")), "\"C:\\foo\"");
+  EXPECT_EQ(fmt::format("{:?g}", path("C:\\foo")), "\"C:/foo\"");
+  EXPECT_EQ(fmt::format("{:g?}", path("C:\\foo")), "\"C:/foo\"");
+  // 'g' + width/fill on a native backslash path (generic form is C:/foo).
+  EXPECT_EQ(fmt::format("{:*>12g}", path("C:\\foo")), "******C:/foo");  // 6+6
+  EXPECT_EQ(fmt::format("{:*>14?g}", path("C:\\foo")), "******\"C:/foo\"");  // 6+8
+  EXPECT_EQ(fmt::format("{:*>14g?}", path("C:\\foo")), "******\"C:/foo\"");
 
   EXPECT_EQ(fmt::format("{}", path(L"\x0428\x0447\x0443\x0447\x044B\x043D\x0448"
                                    L"\x0447\x044B\x043D\x0430")),
@@ -122,7 +140,37 @@ TEST(std_test, source_location) {
 
 TEST(std_test, optional) {
 #ifdef __cpp_lib_optional
+  // Empty: bare "none", never quoted.
   EXPECT_EQ(fmt::format("{}", std::optional<int>{}), "none");
+  EXPECT_EQ(fmt::format("{:?}", std::optional<int>{}), "none");
+  EXPECT_EQ(fmt::format("{:x}", std::optional<int>{}), "none");
+  EXPECT_EQ(fmt::format("{}", std::optional<std::string>{}), "none");
+  EXPECT_EQ(fmt::format("{:?}", std::optional<std::string>{}), "none");
+
+  // Specs forward to the contained value.
+  EXPECT_EQ(fmt::format("{}", std::optional{42}), "optional(42)");
+  EXPECT_EQ(fmt::format("{:x}", std::optional{42}), "optional(2a)");
+  EXPECT_EQ(fmt::format("{:X}", std::optional{42}), "optional(2A)");
+  EXPECT_EQ(fmt::format("{:#x}", std::optional{42}), "optional(0x2a)");
+  EXPECT_EQ(fmt::format("{:05d}", std::optional{42}), "optional(00042)");
+  EXPECT_EQ(fmt::format("{:*>8}", std::optional{42}), "optional(******42)");
+  EXPECT_EQ(fmt::format("{:>10x}", std::optional{42}),
+            "optional(        2a)");
+  EXPECT_EQ(fmt::format("{:?x}", std::optional{42}), "optional(2a)");
+  EXPECT_EQ(fmt::format("{:?}", std::optional{42}), "optional(42)");
+  EXPECT_EQ(fmt::format("{:.{}f}", std::optional{3.14}, 1), "optional(3.1)");
+
+  // Contained strings/chars are always in debug form (quoted), even without
+  // '?' and even with a presentation type like 's' that would otherwise clear
+  // debug formatting on the underlying string formatter.
+  EXPECT_EQ(fmt::format("{}", std::optional{std::string{"string"}}),
+            "optional(\"string\")");
+  EXPECT_EQ(fmt::format("{:?}", std::optional{std::string{"string"}}),
+            "optional(\"string\")");
+  EXPECT_EQ(fmt::format("{:s}", std::optional{std::string{"hi"}}),
+            "optional(\"hi\")");
+  EXPECT_EQ(fmt::format("{}", std::optional{'C'}), "optional(\'C\')");
+
   EXPECT_EQ(fmt::format("{}", std::pair{1, "second"}), "(1, \"second\")");
   EXPECT_EQ(fmt::format("{}", std::vector{std::optional{1}, std::optional{2},
                                           std::optional{3}}),
@@ -136,10 +184,6 @@ TEST(std_test, optional) {
   EXPECT_EQ(
       fmt::format("{::d}", std::optional{std::vector{'h', 'e', 'l', 'l', 'o'}}),
       "optional([104, 101, 108, 108, 111])");
-  EXPECT_EQ(fmt::format("{}", std::optional{std::string{"string"}}),
-            "optional(\"string\")");
-  EXPECT_EQ(fmt::format("{}", std::optional{'C'}), "optional(\'C\')");
-  EXPECT_EQ(fmt::format("{:.{}f}", std::optional{3.14}, 1), "optional(3.1)");
 
   struct unformattable {};
   EXPECT_FALSE((fmt::is_formattable<unformattable>::value));
