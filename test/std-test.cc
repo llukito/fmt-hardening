@@ -30,16 +30,29 @@ TEST(std_test, path) {
 
   EXPECT_EQ(fmt::format("{}", path("foo\"bar")), "foo\"bar");
   EXPECT_EQ(fmt::format("{:?}", path("foo\"bar")), "\"foo\\\"bar\"");
+  // Controls still escape in debug; path-separator backslash does not (below).
+  EXPECT_EQ(fmt::format("{:?}", path("foo\tbar")), "\"foo\\tbar\"");
+  EXPECT_EQ(fmt::format("{:?}", path("foo\nbar")), "\"foo\\nbar\"");
 
   EXPECT_EQ(fmt::format("{:g}", path("/usr/bin")), "/usr/bin");
   // '?' and 'g' may appear in either order.
   EXPECT_EQ(fmt::format("{:?g}", path("/usr/bin")), "\"/usr/bin\"");
   EXPECT_EQ(fmt::format("{:g?}", path("/usr/bin")), "\"/usr/bin\"");
+  // 'g' with width/fill pads the (generic) path string.
+  EXPECT_EQ(fmt::format("{:*>12g}", path("foo")), "*********foo");  // 9+3
+  EXPECT_EQ(fmt::format("{:*>12?g}", path("foo")), "*******\"foo\"");  // 7+"foo"
+  EXPECT_EQ(fmt::format("{:*>12g?}", path("foo")), "*******\"foo\"");
 #  ifdef _WIN32
   EXPECT_EQ(fmt::format("{}", path("C:\\foo")), "C:\\foo");
   EXPECT_EQ(fmt::format("{:g}", path("C:\\foo")), "C:/foo");
+  // Debug leaves path-separator '\' unescaped for readability.
+  EXPECT_EQ(fmt::format("{:?}", path("C:\\foo")), "\"C:\\foo\"");
   EXPECT_EQ(fmt::format("{:?g}", path("C:\\foo")), "\"C:/foo\"");
   EXPECT_EQ(fmt::format("{:g?}", path("C:\\foo")), "\"C:/foo\"");
+  // 'g' + width/fill on a native backslash path (generic form is C:/foo).
+  EXPECT_EQ(fmt::format("{:*>12g}", path("C:\\foo")), "******C:/foo");  // 6+6
+  EXPECT_EQ(fmt::format("{:*>14?g}", path("C:\\foo")), "******\"C:/foo\"");  // 6+8
+  EXPECT_EQ(fmt::format("{:*>14g?}", path("C:\\foo")), "******\"C:/foo\"");
 
   EXPECT_EQ(fmt::format("{}", path(L"\x0428\x0447\x0443\x0447\x044B\x043D\x0448"
                                    L"\x0447\x044B\x043D\x0430")),
