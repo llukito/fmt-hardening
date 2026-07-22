@@ -490,18 +490,35 @@ struct formatter<std::optional<T>, Char,
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) {
+    auto it = ctx.begin();
+    // Optional leading '?' on the optional itself (accepted for consistency
+    // with other formatters). It does not change optional's layout
+    // (always "optional(...)" / "none"); remaining specs are for T.
+    if (it != ctx.end() && *it == static_cast<Char>('?')) ++it;
+    ctx.advance_to(it);
+
+    // Always format the contained value in debug form so strings and chars
+    // stay quoted (optional("text")) and nested values stay readable. This
+    // is independent of whether the outer format used '?'; nested optionals
+    // and ranges rely on it. Presentation specs (e.g. 'x', precision, width)
+    // still go through to the underlying formatter via parse below.
     detail::maybe_set_debug_format(underlying_, true);
-    return underlying_.parse(ctx);
+    it = underlying_.parse(ctx);
+    // Re-apply: some presentation types (notably 's') clear debug on parse.
+    detail::maybe_set_debug_format(underlying_, true);
+    return it;
   }
 
   template <typename FormatContext>
   auto format(const std::optional<T>& opt, FormatContext& ctx) const
       -> decltype(ctx.out()) {
+    // Empty optional is always the bare word "none" — never quoted/escaped.
     if (!opt) return detail::write<Char>(ctx.out(), none);
 
     auto out = ctx.out();
     out = detail::write<Char>(out, optional);
     ctx.advance_to(out);
+    // Forward the (already-parsed) specs to the contained value.
     out = underlying_.format(*opt, ctx);
     return detail::write(out, ')');
   }
