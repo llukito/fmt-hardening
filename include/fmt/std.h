@@ -322,11 +322,22 @@ template <typename Char> struct formatter<std::filesystem::path, Char> {
     Char c = *it;
     if ((c >= '0' && c <= '9') || c == '{')
       it = detail::parse_width(it, end, specs_, width_ref_, ctx);
-    if (it != end && *it == '?') {
-      debug_ = true;
-      ++it;
+
+    // Optional '?' (debug) and 'g' (generic path separators). They are
+    // independent and may appear in either order; each at most once.
+    // Leftover characters (e.g. a second '?') are left for the caller to
+    // report as an unknown format specifier.
+    while (it != end) {
+      if (*it == '?' && !debug_) {
+        debug_ = true;
+        ++it;
+      } else if (*it == 'g' && path_type_ == 0) {
+        path_type_ = 'g';
+        ++it;
+      } else {
+        break;
+      }
     }
-    if (it != end && (*it == 'g')) path_type_ = detail::to_ascii(*it++);
     return it;
   }
 
