@@ -235,15 +235,22 @@ inline auto normalize_libcxx_inline_namespaces(string_view demangled_name_view,
   // libstdc++ inline namespaces.
   //  std::__cxx11::*             -> std::*
   //  std::filesystem::__cxx11::* -> std::filesystem::*
+  //
+  // Only strip "__identifier::" where identifier is [A-Za-z0-9_]+. Do not scan
+  // for "::" past other characters — that would mangle template names such as
+  // std::__nested<std::logic_error> into "std::logic_error>" (stray '>').
   if (demangled_name_view.starts_with("std::")) {
     char* to = begin + 5;  // std::
     for (const char *from = to, *end = begin + demangled_name_view.size();
          from < end;) {
       // This is safe, because demangled_name is NUL-terminated.
       if (from[0] == '_' && from[1] == '_') {
-        const char* next = from + 1;
-        while (next < end && *next != ':') next++;
-        if (next[0] == ':' && next[1] == ':') {
+        const char* next = from + 2;
+        while (next < end && ((*next >= '0' && *next <= '9') ||
+                              (*next >= 'A' && *next <= 'Z') ||
+                              (*next >= 'a' && *next <= 'z') || *next == '_'))
+          ++next;
+        if (next + 1 < end && next[0] == ':' && next[1] == ':') {
           from = next + 2;
           continue;
         }
@@ -764,11 +771,16 @@ template <> struct formatter<std::type_info> {
 };
 #endif  // FMT_USE_RTTI
 
+// Formats std::exception (and derived types). Optional 't' includes the
+// demangled dynamic type name. Supports fill / align / width like error_code
+// and type_info (content is built first, then padded as a string).
 template <typename T>
 struct formatter<
     T, char,
     typename std::enable_if<std::is_base_of<std::exception, T>::value>::type> {
  private:
+  format_specs specs_;
+  detail::arg_ref<char> width_ref_;
   bool with_typename_ = false;
 
  public:
@@ -776,7 +788,18 @@ struct formatter<
     auto it = ctx.begin();
     auto end = ctx.end();
     if (it == end || *it == '}') return it;
-    if (*it == 't') {
+
+    // 't' may appear before fill/align/width ("{:t>40}") or after ("{:>40t}").
+    if (it != end && *it == 't') {
+      ++it;
+      with_typename_ = FMT_USE_RTTI != 0;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == 't') {
       ++it;
       with_typename_ = FMT_USE_RTTI != 0;
     }
@@ -786,7 +809,16 @@ struct formatter<
   template <typename Context>
   auto format(const std::exception& ex, Context& ctx) const
       -> decltype(ctx.out()) {
-    return write(ctx.out(), ex);
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    if (specs.width == 0) return write(ctx.out(), ex);
+
+    // Build full message (including nested chain) then apply width/align.
+    auto buf = memory_buffer();
+    write(appender(buf), ex);
+    return detail::write<char>(
+        ctx.out(), string_view(buf.data(), buf.size()), specs);
   }
 
  private:
