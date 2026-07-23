@@ -513,6 +513,16 @@ TEST(std_test, exception_ptr) {
 TEST(std_test, type_info) {
   EXPECT_EQ(fmt::format("{}", typeid(std::runtime_error)),
             "std::runtime_error");
+  // Width / align match error_code: pad the demangled name as a string.
+  EXPECT_EQ(fmt::format("{:>20}", typeid(std::runtime_error)),
+            "  std::runtime_error");
+  EXPECT_EQ(fmt::format("{:20}", typeid(std::runtime_error)),
+            "std::runtime_error  ");
+  EXPECT_EQ(fmt::format("{:*>22}", typeid(std::runtime_error)),
+            "****std::runtime_error");
+  // Dynamic width.
+  EXPECT_EQ(fmt::format("{:>{}}", typeid(std::runtime_error), 20),
+            "  std::runtime_error");
 }
 #endif  // FMT_USE_RTTI
 
@@ -571,6 +581,18 @@ TEST(std_test, format_bitset) {
   EXPECT_EQ(fmt::format("{}", bs), "101010");
   EXPECT_EQ(fmt::format("{:0>8}", bs), "00101010");
   EXPECT_EQ(fmt::format("{:-^12}", bs), "---101010---");
+
+  // '#' groups bits in fours (from the right) for readability.
+  EXPECT_EQ(fmt::format("{:#}", bs), "10 1010");
+  EXPECT_EQ(fmt::format("{:#}", std::bitset<8>(0b10101100)), "1010 1100");
+  EXPECT_EQ(fmt::format("{:#}", std::bitset<4>(0b1010)), "1010");
+  EXPECT_EQ(fmt::format("{:#}", std::bitset<16>(0b1010110011110000)),
+            "1010 1100 1111 0000");
+  // Grouping composes with fill / align / width ("1010 1100" is 9 chars).
+  EXPECT_EQ(fmt::format("{:*>12#}", std::bitset<8>(0b10101100)),
+            "***1010 1100");
+  EXPECT_EQ(fmt::format("{:#12}", std::bitset<8>(0b10101100)), "1010 1100   ");
+  EXPECT_EQ(fmt::format("{:>#12}", std::bitset<8>(0b10101100)), "   1010 1100");
 }
 
 #ifdef __cpp_lib_byte
