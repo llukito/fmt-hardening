@@ -235,15 +235,22 @@ inline auto normalize_libcxx_inline_namespaces(string_view demangled_name_view,
   // libstdc++ inline namespaces.
   //  std::__cxx11::*             -> std::*
   //  std::filesystem::__cxx11::* -> std::filesystem::*
+  //
+  // Only strip "__identifier::" where identifier is [A-Za-z0-9_]+. Do not scan
+  // for "::" past other characters — that would mangle template names such as
+  // std::__nested<std::logic_error> into "std::logic_error>" (stray '>').
   if (demangled_name_view.starts_with("std::")) {
     char* to = begin + 5;  // std::
     for (const char *from = to, *end = begin + demangled_name_view.size();
          from < end;) {
       // This is safe, because demangled_name is NUL-terminated.
       if (from[0] == '_' && from[1] == '_') {
-        const char* next = from + 1;
-        while (next < end && *next != ':') next++;
-        if (next[0] == ':' && next[1] == ':') {
+        const char* next = from + 2;
+        while (next < end && ((*next >= '0' && *next <= '9') ||
+                              (*next >= 'A' && *next <= 'Z') ||
+                              (*next >= 'a' && *next <= 'z') || *next == '_'))
+          ++next;
+        if (next + 1 < end && next[0] == ':' && next[1] == ':') {
           from = next + 2;
           continue;
         }
@@ -287,15 +294,17 @@ auto write_demangled_name(OutputIt out, const std::type_info& ti) -> OutputIt {
   std::unique_ptr<char, void (*)(void*)> demangled_name_ptr(
       abi::__cxa_demangle(ti.name(), nullptr, &size, &status), &free);
 
-  string_view demangled_name_view;
-  if (demangled_name_ptr) {
-    demangled_name_view = normalize_libcxx_inline_namespaces(
+  if (demangled_name_ptr && status == 0) {
+    string_view demangled_name_view = normalize_libcxx_inline_namespaces(
         demangled_name_ptr.get(), demangled_name_ptr.get());
-  } else {
-    demangled_name_view = string_view(ti.name());
+    return detail::write_bytes<char>(out, demangled_name_view);
   }
-  return detail::write_bytes<char>(out, demangled_name_view);
+  // Demangle unavailable at runtime, or failed: fall back to the raw
+  // mangled ABI name.
+  return detail::write_bytes<char>(out, string_view(ti.name()));
 #  elif FMT_MSC_VERSION && defined(_MSVC_STL_UPDATE)
+  // MSVC's type_info::name() is already a readable decorated name, not
+  // Itanium-mangled; strip MSVC prefixes (class/struct/...).
   return normalize_msvc_abi_name(ti.name(), out);
 #  elif FMT_MSC_VERSION && defined(_LIBCPP_VERSION)
   const string_view demangled_name = ti.name();
@@ -311,6 +320,8 @@ auto write_demangled_name(OutputIt out, const std::type_info& ti) -> OutputIt {
       normalize_libcxx_inline_namespaces(name_copy, name_copy.data());
   return detail::write_bytes<char>(out, normalized_name);
 #  else
+  // No demangler in this build (e.g. no <cxxabi.h> / gabi++), fall back to
+  // the raw mangled name.
   return detail::write_bytes<char>(out, string_view(ti.name()));
 #  endif
 }
@@ -449,27 +460,55 @@ class path : public std::filesystem::path {
 
 #endif  // FMT_CPP_LIB_FILESYSTEM
 
+// Formats a bitset as a binary digit string (MSB first), e.g. "101010".
+// Supports fill / align / width like a string. The '#' alternate form inserts
+// a space every four bits (from the right), e.g. "10 1010" for 6 bits, which
+// keeps wider bitsets readable.
 template <size_t N, typename Char>
-struct formatter<std::bitset<N>, Char>
-    : nested_formatter<basic_string_view<Char>, Char> {
+struct formatter<std::bitset<N>, Char> {
  private:
-  // This is a functor because C++11 doesn't support generic lambdas.
-  struct writer {
-    const std::bitset<N>& bs;
-
-    template <typename OutputIt>
-    FMT_CONSTEXPR auto operator()(OutputIt out) -> OutputIt {
-      for (auto pos = N; pos > 0; --pos)
-        out = detail::write<Char>(out, bs[pos - 1] ? Char('1') : Char('0'));
-      return out;
-    }
-  };
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  bool grouped_ = false;
 
  public:
+  FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
+    auto it = ctx.begin(), end = ctx.end();
+    if (it == end || *it == '}') return it;
+
+    it = detail::parse_align(it, end, specs_);
+    // '#' may appear before or after width (e.g. "{:#}", "{:#16}", "{:*>16#}").
+    if (it != end && *it == '#') {
+      grouped_ = true;
+      ++it;
+    }
+    if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    if (it != end && *it == '#') {
+      grouped_ = true;
+      ++it;
+    }
+    return it;
+  }
+
   template <typename FormatContext>
   auto format(const std::bitset<N>& bs, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    return this->write_padded(ctx, writer{bs});
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+
+    auto buf = basic_memory_buffer<Char>();
+    auto out = basic_appender<Char>(buf);
+    // Emit MSB first. With grouping, put a space before every bit whose index
+    // from the LSB is a multiple of 4 (except at the start), so the rightmost
+    // group is always 4 bits when N >= 4: e.g. N=10 → "10 1010 1100".
+    for (size_t pos = N; pos > 0; --pos) {
+      if (grouped_ && pos != N && pos % 4 == 0) *out++ = Char(' ');
+      *out++ = bs[pos - 1] ? Char('1') : Char('0');
+    }
+    return detail::write(
+        ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
   }
 };
 
@@ -699,25 +738,49 @@ template <> struct formatter<std::error_code> {
 };
 
 #if FMT_USE_RTTI
+// Formats a demangled type name. Supports the same width/align fill handling
+// as formatter<std::error_code> (build the name, then pad as a string).
 template <> struct formatter<std::type_info> {
+ private:
+  format_specs specs_;
+  detail::arg_ref<char> width_ref_;
+
  public:
   FMT_CONSTEXPR auto parse(parse_context<>& ctx) -> const char* {
-    return ctx.begin();
+    auto it = ctx.begin(), end = ctx.end();
+    if (it == end) return it;
+
+    it = detail::parse_align(it, end, specs_);
+
+    if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    return it;
   }
 
   template <typename Context>
   auto format(const std::type_info& ti, Context& ctx) const
       -> decltype(ctx.out()) {
-    return detail::write_demangled_name(ctx.out(), ti);
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    auto buf = memory_buffer();
+    detail::write_demangled_name(appender(buf), ti);
+    return detail::write<char>(
+        ctx.out(), string_view(buf.data(), buf.size()), specs);
   }
 };
 #endif  // FMT_USE_RTTI
 
+// Formats std::exception (and derived types). Optional 't' includes the
+// demangled dynamic type name. Supports fill / align / width like error_code
+// and type_info (content is built first, then padded as a string).
 template <typename T>
 struct formatter<
     T, char,
     typename std::enable_if<std::is_base_of<std::exception, T>::value>::type> {
  private:
+  format_specs specs_;
+  detail::arg_ref<char> width_ref_;
   bool with_typename_ = false;
 
  public:
@@ -725,7 +788,18 @@ struct formatter<
     auto it = ctx.begin();
     auto end = ctx.end();
     if (it == end || *it == '}') return it;
-    if (*it == 't') {
+
+    // 't' may appear before fill/align/width ("{:t>40}") or after ("{:>40t}").
+    if (it != end && *it == 't') {
+      ++it;
+      with_typename_ = FMT_USE_RTTI != 0;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == 't') {
       ++it;
       with_typename_ = FMT_USE_RTTI != 0;
     }
@@ -735,7 +809,16 @@ struct formatter<
   template <typename Context>
   auto format(const std::exception& ex, Context& ctx) const
       -> decltype(ctx.out()) {
-    return write(ctx.out(), ex);
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    if (specs.width == 0) return write(ctx.out(), ex);
+
+    // Build full message (including nested chain) then apply width/align.
+    auto buf = memory_buffer();
+    write(appender(buf), ex);
+    return detail::write<char>(
+        ctx.out(), string_view(buf.data(), buf.size()), specs);
   }
 
  private:
