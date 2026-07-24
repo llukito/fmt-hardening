@@ -605,14 +605,15 @@ struct formatter<std::expected<T, E>, Char,
     auto out = ctx.out();
 
     if (value.has_value()) {
-      out = detail::write<Char>(out, "expected(");
+      // write_bytes: ASCII labels work for char and wchar_t.
+      out = detail::write_bytes<Char>(out, "expected(");
       if constexpr (!std::is_void<T>::value)
         out = detail::write_escaped_alternative<Char>(out, *value);
     } else {
-      out = detail::write<Char>(out, "unexpected(");
+      out = detail::write_bytes<Char>(out, "unexpected(");
       out = detail::write_escaped_alternative<Char>(out, value.error());
     }
-    *out++ = ')';
+    *out++ = static_cast<Char>(')');
     return out;
   }
 };
@@ -629,10 +630,10 @@ struct formatter<std::unexpected<E>, Char,
       -> decltype(ctx.out()) {
     auto out = ctx.out();
 
-    out = detail::write<Char>(out, "unexpected(");
+    out = detail::write_bytes<Char>(out, "unexpected(");
     out = detail::write_escaped_alternative<Char>(out, value.error());
 
-    *out++ = ')';
+    *out++ = static_cast<Char>(')');
     return out;
   }
 };
@@ -672,7 +673,8 @@ template <typename Char> struct formatter<std::monostate, Char> {
   template <typename FormatContext>
   FMT_CONSTEXPR auto format(const std::monostate&, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    return detail::write<Char>(ctx.out(), "monostate");
+    // write_bytes so the ASCII label works for char and wchar_t alike.
+    return detail::write_bytes<Char>(ctx.out(), "monostate");
   }
 };
 
@@ -735,7 +737,8 @@ struct formatter<Variant, Char,
     FMT_TRY {
       std::visit(
           [&](const auto& v) {
-            if (!no_wrapper_) out = detail::write<Char>(out, "variant(");
+            // write_bytes: ASCII "variant(" works for char and wchar_t.
+            if (!no_wrapper_) out = detail::write_bytes<Char>(out, "variant(");
             out = detail::write_escaped_alternative<Char>(out, v);
             if (!no_wrapper_) *out++ = static_cast<Char>(')');
           },
@@ -744,8 +747,8 @@ struct formatter<Variant, Char,
     FMT_CATCH(const std::bad_variant_access&) {
       // Valueless: still bare "valueless by exception" with '{:n}', otherwise
       // wrapped like a normal alternative.
-      if (!no_wrapper_) out = detail::write<Char>(out, "variant(");
-      out = detail::write<Char>(out, "valueless by exception");
+      if (!no_wrapper_) out = detail::write_bytes<Char>(out, "variant(");
+      out = detail::write_bytes<Char>(out, "valueless by exception");
       if (!no_wrapper_) *out++ = static_cast<Char>(')');
     }
     return out;

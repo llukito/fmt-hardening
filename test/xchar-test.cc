@@ -7,7 +7,11 @@
 
 #include "fmt/xchar.h"
 
+#include <bitset>
 #include <complex>
+#include <limits>
+#include <stdexcept>
+#include <system_error>
 #include <vector>
 
 #include "fmt/chrono.h"
@@ -435,22 +439,311 @@ TEST(std_test_xchar, format_bitset) {
   EXPECT_EQ(fmt::format(L"{}", bs), L"101010");
   EXPECT_EQ(fmt::format(L"{:0>8}", bs), L"00101010");
   EXPECT_EQ(fmt::format(L"{:-^12}", bs), L"---101010---");
+
+  // '#' groups bits in fours (from the right).
+  EXPECT_EQ(fmt::format(L"{:#}", bs), L"10 1010");
+  EXPECT_EQ(fmt::format(L"{:#}", std::bitset<8>(0b10101100)), L"1010 1100");
+  EXPECT_EQ(fmt::format(L"{:#}", std::bitset<4>(0b1010)), L"1010");
+  EXPECT_EQ(fmt::format(L"{:#}", std::bitset<16>(0b1010110011110000)),
+            L"1010 1100 1111 0000");
+  // Grouping + fill / align / width ("1010 1100" is 9 wide chars).
+  EXPECT_EQ(fmt::format(L"{:*>12#}", std::bitset<8>(0b10101100)),
+            L"***1010 1100");
+  EXPECT_EQ(fmt::format(L"{:#12}", std::bitset<8>(0b10101100)),
+            L"1010 1100   ");
+  EXPECT_EQ(fmt::format(L"{:>#12}", std::bitset<8>(0b10101100)),
+            L"   1010 1100");
+  // Dynamic width with grouping.
+  EXPECT_EQ(fmt::format(L"{:*>{}#}", std::bitset<8>(0b10101100), 12),
+            L"***1010 1100");
 }
 
 TEST(std_test_xchar, complex) {
-  auto s = fmt::format(L"{}", std::complex<double>(1, 2));
-  EXPECT_EQ(s, L"(1+2i)");
+  using limits = std::numeric_limits<double>;
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(1, 2)), L"(1+2i)");
   EXPECT_EQ(fmt::format(L"{:.2f}", std::complex<double>(1, 2)),
             L"(1.00+2.00i)");
   EXPECT_EQ(fmt::format(L"{:8}", std::complex<double>(1, 2)), L"(1+2i)  ");
   EXPECT_EQ(fmt::format(L"{:-<8}", std::complex<double>(1, 2)), L"(1+2i)--");
+
+  // Pure imag (real == 0): no parentheses.
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(0, 2.2)), L"2.2i");
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(0, -2.2)), L"-2.2i");
+  EXPECT_EQ(fmt::format(L"{:+}", std::complex<double>(0, 2.2)), L"+2.2i");
+  EXPECT_EQ(fmt::format(L"{:+}", std::complex<double>(0, -2.2)), L"-2.2i");
+
+  // Full form with signs / space.
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(1, -2.2)), L"(1-2.2i)");
+  EXPECT_EQ(fmt::format(L"{:+}", std::complex<double>(1, 2.2)), L"(+1+2.2i)");
+  EXPECT_EQ(fmt::format(L"{:+}", std::complex<double>(1, -2.2)), L"(+1-2.2i)");
+  EXPECT_EQ(fmt::format(L"{: }", std::complex<double>(1, 2.2)), L"( 1+2.2i)");
+  EXPECT_EQ(fmt::format(L"{: }", std::complex<double>(1, -2.2)), L"( 1-2.2i)");
+
+  // Outer width pads the whole complex string (not just components).
+  EXPECT_EQ(fmt::format(L"{:>20.2f}", std::complex<double>(1, 2.2)),
+            L"        (1.00+2.20i)");
+  EXPECT_EQ(fmt::format(L"{:<20.2f}", std::complex<double>(1, 2.2)),
+            L"(1.00+2.20i)        ");
+  EXPECT_EQ(fmt::format(L"{:<20.2f}", std::complex<double>(1, -2.2)),
+            L"(1.00-2.20i)        ");
+  EXPECT_EQ(fmt::format(L"{:<{}.{}f}", std::complex<double>(1, -2.2), 20, 2),
+            L"(1.00-2.20i)        ");
+  // "2i" is 2 chars → 6 fill chars to width 8.
+  EXPECT_EQ(fmt::format(L"{:*>8}", std::complex<double>(0, 2)), L"******2i");
+
+  // Non-finite imag.
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(1, limits::quiet_NaN())),
+            L"(1+nan i)");
+  EXPECT_EQ(fmt::format(L"{}", std::complex<double>(1, -limits::infinity())),
+            L"(1-inf i)");
+  EXPECT_EQ(fmt::format(L"{}", std::complex<int>(1, 2)), L"(1+2i)");
 }
 
 TEST(std_test_xchar, optional) {
 #  ifdef __cpp_lib_optional
+  // Empty: bare "none", never quoted (even with '?').
+  EXPECT_EQ(fmt::format(L"{}", std::optional<int>{}), L"none");
+  EXPECT_EQ(fmt::format(L"{:?}", std::optional<int>{}), L"none");
+  EXPECT_EQ(fmt::format(L"{:x}", std::optional<int>{}), L"none");
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional<int>{}), L"none");
+  EXPECT_EQ(fmt::format(L"{}", std::optional<std::wstring>{}), L"none");
+
+  // Specs forward to the contained value; wrapper stays.
+  EXPECT_EQ(fmt::format(L"{}", std::optional{42}), L"optional(42)");
+  EXPECT_EQ(fmt::format(L"{:x}", std::optional{42}), L"optional(2a)");
+  EXPECT_EQ(fmt::format(L"{:X}", std::optional{42}), L"optional(2A)");
+  EXPECT_EQ(fmt::format(L"{:#x}", std::optional{42}), L"optional(0x2a)");
+  EXPECT_EQ(fmt::format(L"{:05d}", std::optional{42}), L"optional(00042)");
+  EXPECT_EQ(fmt::format(L"{:*>8}", std::optional{42}), L"optional(******42)");
+  EXPECT_EQ(fmt::format(L"{:>10x}", std::optional{42}),
+            L"optional(        2a)");
+  EXPECT_EQ(fmt::format(L"{:?x}", std::optional{42}), L"optional(2a)");
+  EXPECT_EQ(fmt::format(L"{:?}", std::optional{42}), L"optional(42)");
+  EXPECT_EQ(fmt::format(L"{:.{}f}", std::optional{3.14}, 1), L"optional(3.1)");
+
+  // '{:n}' drops the optional(...) wrapper.
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional{42}), L"42");
+  EXPECT_EQ(fmt::format(L"{:nx}", std::optional{42}), L"2a");
+  EXPECT_EQ(fmt::format(L"{:n#x}", std::optional{42}), L"0x2a");
+  EXPECT_EQ(fmt::format(L"{:n*>8}", std::optional{42}), L"******42");
+  EXPECT_EQ(fmt::format(L"{:?n}", std::optional{42}), L"42");
+  EXPECT_EQ(fmt::format(L"{:n?}", std::optional{42}), L"42");
+
+  // Wide char / wstring always debug-quoted inside optional.
   EXPECT_EQ(fmt::format(L"{}", std::optional{L'C'}), L"optional(\'C\')");
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional{L'C'}), L"\'C\'");
   EXPECT_EQ(fmt::format(L"{}", std::optional{std::wstring{L"wide string"}}),
             L"optional(\"wide string\")");
+  EXPECT_EQ(fmt::format(L"{:?}", std::optional{std::wstring{L"wide string"}}),
+            L"optional(\"wide string\")");
+  EXPECT_EQ(fmt::format(L"{:s}", std::optional{std::wstring{L"hi"}}),
+            L"optional(\"hi\")");
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional{std::wstring{L"hi"}}), L"\"hi\"");
+  // Escapes in wide strings.
+  EXPECT_EQ(fmt::format(L"{}", std::optional{std::wstring{L"a\"b\n"}}),
+            L"optional(\"a\\\"b\\n\")");
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional{std::wstring{L"a\"b\n"}}),
+            L"\"a\\\"b\\n\"");
+
+  // Nested optional / range with 'n'.
+  EXPECT_EQ(
+      fmt::format(L"{}", std::optional<std::optional<int>>{{42}}),
+      L"optional(optional(42))");
+  EXPECT_EQ(
+      fmt::format(L"{:n}", std::optional<std::optional<int>>{{42}}),
+      L"optional(42)");
+  EXPECT_EQ(fmt::format(L"{:nn}", std::optional{std::vector{1, 2, 3}}),
+            L"1, 2, 3");
+  EXPECT_EQ(fmt::format(L"{:n}", std::optional{std::vector{1, 2, 3}}),
+            L"[1, 2, 3]");
+  EXPECT_EQ(
+      fmt::format(L"{}", std::vector{std::optional{1}, std::optional{2},
+                                     std::optional{3}}),
+      L"[optional(1), optional(2), optional(3)]");
+  EXPECT_EQ(
+      fmt::format(L"{:<{}}", std::optional{std::wstring{L"left aligned"}}, 30),
+      L"optional(\"left aligned\"                )");
+  EXPECT_EQ(
+      fmt::format(L"{::d}",
+                  std::optional{std::vector{L'h', L'e', L'l', L'l', L'o'}}),
+      L"optional([104, 101, 108, 108, 111])");
+
+  EXPECT_TRUE((fmt::is_formattable<std::optional<int>, wchar_t>::value));
+  EXPECT_TRUE(
+      (fmt::is_formattable<std::optional<std::wstring>, wchar_t>::value));
+#  endif
+}
+
+#  ifdef __cpp_lib_variant
+namespace {
+struct throws_on_move_xchar {
+  throws_on_move_xchar() = default;
+  [[noreturn]] throws_on_move_xchar(throws_on_move_xchar&&) {
+    throw std::runtime_error("Thrown by throws_on_move_xchar");
+  }
+  throws_on_move_xchar(const throws_on_move_xchar&) = default;
+};
+}  // namespace
+
+namespace fmt {
+template <typename Char>
+struct formatter<throws_on_move_xchar, Char>
+    : formatter<basic_string_view<Char>, Char> {
+  template <typename FormatContext>
+  auto format(const throws_on_move_xchar&, FormatContext& ctx) const
+      -> decltype(ctx.out()) {
+    basic_string_view<Char> str(
+        detail::string_literal<Char, '<', 't', 'h', 'r', 'o', 'w', 's', '>'>{});
+    return formatter<basic_string_view<Char>, Char>::format(str, ctx);
+  }
+};
+}  // namespace fmt
+
+TEST(std_test_xchar, variant) {
+  EXPECT_EQ(fmt::format(L"{}", std::monostate{}), L"monostate");
+
+  using V0 = std::variant<int, float, std::wstring, wchar_t>;
+  V0 v0(42);
+  V0 v1(1.5f);
+  V0 v2(std::wstring(L"hello"));
+  V0 v3(L'i');
+  EXPECT_EQ(fmt::format(L"{}", v0), L"variant(42)");
+  EXPECT_EQ(fmt::format(L"{}", v1), L"variant(1.5)");
+  EXPECT_EQ(fmt::format(L"{}", v2), L"variant(\"hello\")");
+  EXPECT_EQ(fmt::format(L"{}", v3), L"variant('i')");
+
+  // '{:n}' drops the variant(...) wrapper.
+  EXPECT_EQ(fmt::format(L"{:n}", v0), L"42");
+  EXPECT_EQ(fmt::format(L"{:n}", v1), L"1.5");
+  EXPECT_EQ(fmt::format(L"{:n}", v2), L"\"hello\"");
+  EXPECT_EQ(fmt::format(L"{:n}", v3), L"'i'");
+
+  // Width / align pad the full content (wrapped or with 'n').
+  EXPECT_EQ(fmt::format(L"{:>15}", v0), L"    variant(42)");
+  EXPECT_EQ(fmt::format(L"{:15}", v0), L"variant(42)    ");
+  EXPECT_EQ(fmt::format(L"{:*>15}", v0), L"****variant(42)");
+  EXPECT_EQ(fmt::format(L"{:*>{}}", v0, 15), L"****variant(42)");
+  EXPECT_EQ(fmt::format(L"{:<20}", v2), L"variant(\"hello\")    ");
+  EXPECT_EQ(fmt::format(L"{:n*>8}", v0), L"******42");
+  EXPECT_EQ(fmt::format(L"{:*>8n}", v0), L"******42");
+  EXPECT_EQ(fmt::format(L"{:n>6}", v0), L"    42");
+
+  using V1 = std::variant<std::monostate, std::wstring, std::wstring>;
+  V1 v4{};
+  V1 v5{std::in_place_index<1>, L"yes, this is variant"};
+  EXPECT_EQ(fmt::format(L"{}", v4), L"variant(monostate)");
+  EXPECT_EQ(fmt::format(L"{:n}", v4), L"monostate");
+  // "variant(monostate)" is 18 chars; with 'n', bare "monostate" is 9.
+  EXPECT_EQ(fmt::format(L"{:*>20}", v4), L"**variant(monostate)");
+  EXPECT_EQ(fmt::format(L"{:n*>12}", v4), L"***monostate");
+  EXPECT_EQ(fmt::format(L"{}", v5), L"variant(\"yes, this is variant\")");
+  EXPECT_EQ(fmt::format(L"{:n}", v5), L"\"yes, this is variant\"");
+
+  // Escapes in wide alternatives.
+  V0 v_esc(std::wstring(L"a\"b\n"));
+  EXPECT_EQ(fmt::format(L"{}", v_esc), L"variant(\"a\\\"b\\n\")");
+  EXPECT_EQ(fmt::format(L"{:n}", v_esc), L"\"a\\\"b\\n\"");
+
+  std::variant<std::monostate, throws_on_move_xchar> v6;
+  try {
+    throws_on_move_xchar thrower;
+    v6.emplace<throws_on_move_xchar>(std::move(thrower));
+  } catch (const std::runtime_error&) {
+  }
+  EXPECT_EQ(fmt::format(L"{}", v6), L"variant(valueless by exception)");
+  EXPECT_EQ(fmt::format(L"{:n}", v6), L"valueless by exception");
+  EXPECT_EQ(fmt::format(L"{:*>35}", v6),
+            L"****variant(valueless by exception)");
+  EXPECT_EQ(fmt::format(L"{:n*>25}", v6), L"***valueless by exception");
+
+  EXPECT_TRUE((fmt::is_formattable<std::variant<int, float>, wchar_t>::value));
+  EXPECT_TRUE((fmt::is_formattable<std::monostate, wchar_t>::value));
+  EXPECT_TRUE((fmt::is_formattable<
+               std::variant<std::monostate, std::wstring>, wchar_t>::value));
+  struct unformattable {};
+  EXPECT_FALSE(
+      (fmt::is_formattable<std::variant<unformattable>, wchar_t>::value));
+}
+#  endif  // __cpp_lib_variant
+
+#  ifdef __cpp_lib_expected
+TEST(std_test_xchar, expected) {
+  EXPECT_EQ(fmt::format(L"{}", std::expected<void, int>{}), L"expected()");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<int, int>{1}), L"expected(1)");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<int, int>{std::unexpected(1)}),
+            L"unexpected(1)");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<std::wstring, int>{L"test"}),
+            L"expected(\"test\")");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<int, std::wstring>{
+                                   std::unexpected(std::wstring(L"test"))}),
+            L"unexpected(\"test\")");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<wchar_t, int>{L'a'}),
+            L"expected('a')");
+  EXPECT_EQ(fmt::format(L"{}", std::expected<int, wchar_t>{
+                                   std::unexpected(L'a')}),
+            L"unexpected('a')");
+  EXPECT_EQ(
+      fmt::format(L"{}", std::unexpected<std::wstring>{std::wstring(L"err")}),
+      L"unexpected(\"err\")");
+  EXPECT_TRUE(
+      (fmt::is_formattable<std::expected<int, int>, wchar_t>::value));
+}
+#  endif  // __cpp_lib_expected
+
+#  ifdef __cpp_lib_filesystem
+TEST(std_test_xchar, path) {
+  using std::filesystem::path;
+  EXPECT_EQ(fmt::format(L"{}", path("foo/bar")), L"foo/bar");
+  EXPECT_EQ(fmt::format(L"{:?}", path("foo/bar")), L"\"foo/bar\"");
+  EXPECT_EQ(fmt::format(L"{:8}", path("foo")), L"foo     ");
+  EXPECT_EQ(fmt::format(L"{}", path("foo\"bar")), L"foo\"bar");
+  EXPECT_EQ(fmt::format(L"{:?}", path("foo\"bar")), L"\"foo\\\"bar\"");
+  EXPECT_EQ(fmt::format(L"{:?}", path("foo\tbar")), L"\"foo\\tbar\"");
+  EXPECT_EQ(fmt::format(L"{:?}", path("foo\nbar")), L"\"foo\\nbar\"");
+
+  EXPECT_EQ(fmt::format(L"{:g}", path("foo/bar")), L"foo/bar");
+  EXPECT_EQ(fmt::format(L"{:?g}", path("foo/bar")), L"\"foo/bar\"");
+  EXPECT_EQ(fmt::format(L"{:g?}", path("foo/bar")), L"\"foo/bar\"");
+  EXPECT_EQ(fmt::format(L"{:*>12g}", path("foo")), L"*********foo");
+  EXPECT_EQ(fmt::format(L"{:*>12?g}", path("foo")), L"*******\"foo\"");
+  EXPECT_EQ(fmt::format(L"{:*>12g?}", path("foo")), L"*******\"foo\"");
+  // Dynamic width.
+  EXPECT_EQ(fmt::format(L"{:*>{}g}", path("foo"), 12), L"*********foo");
+
+#    ifdef _WIN32
+  EXPECT_EQ(fmt::format(L"{}", path(L"C:\\foo")), L"C:\\foo");
+  EXPECT_EQ(fmt::format(L"{:g}", path(L"C:\\foo")), L"C:/foo");
+  EXPECT_EQ(fmt::format(L"{:?}", path(L"C:\\foo")), L"\"C:\\foo\"");
+  EXPECT_EQ(fmt::format(L"{:?g}", path(L"C:\\foo")), L"\"C:/foo\"");
+  EXPECT_EQ(fmt::format(L"{:*>12g}", path(L"C:\\foo")), L"******C:/foo");
+#    endif
+
+  // Non-ASCII path via wide native string.
+  EXPECT_EQ(fmt::format(L"{}", path(L"понедельник")), L"понедельник");
+  EXPECT_EQ(fmt::format(L"{:?}", path(L"понедельник")), L"\"понедельник\"");
+
+  EXPECT_TRUE((fmt::is_formattable<path, wchar_t>::value));
+}
+#  endif  // __cpp_lib_filesystem
+
+TEST(std_test_xchar, byte_and_bit_reference) {
+#  ifdef __cpp_lib_byte
+  EXPECT_EQ(fmt::format(L"{}", std::byte{42}), L"42");
+  EXPECT_EQ(fmt::format(L"{:x}", std::byte{42}), L"2a");
+#  endif
+  std::bitset<2> bs(1);
+  EXPECT_EQ(fmt::format(L"{} {}", bs[0], bs[1]), L"true false");
+  std::vector<bool> v = {true, false};
+  EXPECT_EQ(fmt::format(L"{} {}", v[0], v[1]), L"true false");
+}
+
+// error_code / exception / type_info formatters are char-only; document that
+// they are not formattable with wchar_t (no silent fallback).
+TEST(std_test_xchar, char_only_std_formatters) {
+  EXPECT_FALSE((fmt::is_formattable<std::error_code, wchar_t>::value));
+  EXPECT_FALSE((fmt::is_formattable<std::exception, wchar_t>::value));
+#  if FMT_USE_RTTI
+  EXPECT_FALSE((fmt::is_formattable<std::type_info, wchar_t>::value));
 #  endif
 }
 
