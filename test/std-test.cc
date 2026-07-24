@@ -160,6 +160,23 @@ TEST(std_test, optional) {
   EXPECT_EQ(fmt::format("{:?}", std::optional{42}), "optional(42)");
   EXPECT_EQ(fmt::format("{:.{}f}", std::optional{3.14}, 1), "optional(3.1)");
 
+  // '{:n}' drops the optional(...) wrapper (same idea as ranges' {:n}).
+  EXPECT_EQ(fmt::format("{:n}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:nx}", std::optional{42}), "2a");
+  EXPECT_EQ(fmt::format("{:n#x}", std::optional{42}), "0x2a");
+  EXPECT_EQ(fmt::format("{:n*>8}", std::optional{42}), "******42");
+  EXPECT_EQ(fmt::format("{:?n}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:n?}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:n}", std::optional<int>{}), "none");
+  EXPECT_EQ(fmt::format("{:n}", std::optional{std::string{"hi"}}), "\"hi\"");
+  EXPECT_EQ(fmt::format("{:n}", std::optional{'C'}), "\'C\'");
+  EXPECT_EQ(
+      fmt::format("{:n}", std::optional<std::optional<int>>{{42}}),
+      "optional(42)");
+  // Nested range: first 'n' is optional-level, second reaches the vector.
+  EXPECT_EQ(fmt::format("{:nn}", std::optional{std::vector{1, 2, 3}}),
+            "1, 2, 3");
+
   // Contained strings/chars are always in debug form (quoted), even without
   // '?' and even with a presentation type like 's' that would otherwise clear
   // debug formatting on the underlying string formatter.

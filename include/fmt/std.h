@@ -525,6 +525,7 @@ struct formatter<std::optional<T>, Char,
                  std::enable_if_t<is_formattable<T, Char>::value>> {
  private:
   formatter<std::remove_cv_t<T>, Char> underlying_;
+  bool no_wrapper_ = false;
   static constexpr basic_string_view<Char> optional =
       detail::string_literal<Char, 'o', 'p', 't', 'i', 'o', 'n', 'a', 'l',
                              '('>{};
@@ -532,19 +533,36 @@ struct formatter<std::optional<T>, Char,
       detail::string_literal<Char, 'n', 'o', 'n', 'e'>{};
 
  public:
+  // Parses optional-level flags then underlying specs for T:
+  //
+  //   {:} / {:?}   optional(value) / none  (value in debug form)
+  //   {:n}         drop the optional(...) wrapper (like ranges' {:n});
+  //                empty is still the bare word "none"
+  //   {:nx}        no wrapper + underlying presentation (e.g. hex)
+  //
+  // '?' and 'n' may appear in either order, each at most once; remaining
+  // specs are forwarded to T.
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) {
-    auto it = ctx.begin();
-    // Optional leading '?' on the optional itself (accepted for consistency
-    // with other formatters). It does not change optional's layout
-    // (always "optional(...)" / "none"); remaining specs are for T.
-    if (it != ctx.end() && *it == static_cast<Char>('?')) ++it;
+    auto it = ctx.begin(), end = ctx.end();
+    bool saw_debug = false, saw_n = false;
+    while (it != end) {
+      if (*it == static_cast<Char>('?') && !saw_debug) {
+        saw_debug = true;
+        ++it;
+      } else if (*it == static_cast<Char>('n') && !saw_n) {
+        saw_n = true;
+        no_wrapper_ = true;
+        ++it;
+      } else {
+        break;
+      }
+    }
     ctx.advance_to(it);
 
     // Always format the contained value in debug form so strings and chars
-    // stay quoted (optional("text")) and nested values stay readable. This
-    // is independent of whether the outer format used '?'; nested optionals
-    // and ranges rely on it. Presentation specs (e.g. 'x', precision, width)
-    // still go through to the underlying formatter via parse below.
+    // stay quoted (optional("text") / with n: "text") and nested values stay
+    // readable. Independent of whether the outer format used '?'. Presentation
+    // specs (e.g. 'x', precision, width) still go through to T below.
     detail::maybe_set_debug_format(underlying_, true);
     it = underlying_.parse(ctx);
     // Re-apply: some presentation types (notably 's') clear debug on parse.
@@ -557,6 +575,9 @@ struct formatter<std::optional<T>, Char,
       -> decltype(ctx.out()) {
     // Empty optional is always the bare word "none" — never quoted/escaped.
     if (!opt) return detail::write<Char>(ctx.out(), none);
+
+    // '{:n}': format only the contained value (no optional(...) wrapper).
+    if (no_wrapper_) return underlying_.format(*opt, ctx);
 
     auto out = ctx.out();
     out = detail::write<Char>(out, optional);
