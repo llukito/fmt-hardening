@@ -194,16 +194,20 @@ void write_escaped_path(basic_memory_buffer<Char>& quoted,
 
 #if defined(__cpp_lib_expected) || FMT_CPP_LIB_VARIANT
 
-template <typename Char, typename OutputIt, typename T, typename FormatContext>
-FMT_CONSTEXPR auto write_escaped_alternative(OutputIt out, const T& v,
-                                             FormatContext& ctx) -> OutputIt {
+// Writes a variant/expected alternative in debug form (strings/chars escaped).
+// Formats through a local context so the result always lands on `out` (needed
+// when the caller buffers first and then applies outer fill/align/width).
+template <typename Char, typename OutputIt, typename T>
+FMT_CONSTEXPR auto write_escaped_alternative(OutputIt out, const T& v)
+    -> OutputIt {
   if constexpr (has_to_string_view<T>::value)
     return write_escaped_string<Char>(out, detail::to_string_view(v));
   if constexpr (std::is_same_v<T, Char>) return write_escaped_char(out, v);
 
   formatter<std::remove_cv_t<T>, Char> underlying;
   maybe_set_debug_format(underlying, true);
-  return underlying.format(v, ctx);
+  auto fctx = basic_format_context<OutputIt, Char>(out, {}, {});
+  return underlying.format(v, fctx);
 }
 #endif
 
@@ -521,6 +525,7 @@ struct formatter<std::optional<T>, Char,
                  std::enable_if_t<is_formattable<T, Char>::value>> {
  private:
   formatter<std::remove_cv_t<T>, Char> underlying_;
+  bool no_wrapper_ = false;
   static constexpr basic_string_view<Char> optional =
       detail::string_literal<Char, 'o', 'p', 't', 'i', 'o', 'n', 'a', 'l',
                              '('>{};
@@ -528,19 +533,36 @@ struct formatter<std::optional<T>, Char,
       detail::string_literal<Char, 'n', 'o', 'n', 'e'>{};
 
  public:
+  // Parses optional-level flags then underlying specs for T:
+  //
+  //   {:} / {:?}   optional(value) / none  (value in debug form)
+  //   {:n}         drop the optional(...) wrapper (like ranges' {:n});
+  //                empty is still the bare word "none"
+  //   {:nx}        no wrapper + underlying presentation (e.g. hex)
+  //
+  // '?' and 'n' may appear in either order, each at most once; remaining
+  // specs are forwarded to T.
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) {
-    auto it = ctx.begin();
-    // Optional leading '?' on the optional itself (accepted for consistency
-    // with other formatters). It does not change optional's layout
-    // (always "optional(...)" / "none"); remaining specs are for T.
-    if (it != ctx.end() && *it == static_cast<Char>('?')) ++it;
+    auto it = ctx.begin(), end = ctx.end();
+    bool saw_debug = false, saw_n = false;
+    while (it != end) {
+      if (*it == static_cast<Char>('?') && !saw_debug) {
+        saw_debug = true;
+        ++it;
+      } else if (*it == static_cast<Char>('n') && !saw_n) {
+        saw_n = true;
+        no_wrapper_ = true;
+        ++it;
+      } else {
+        break;
+      }
+    }
     ctx.advance_to(it);
 
     // Always format the contained value in debug form so strings and chars
-    // stay quoted (optional("text")) and nested values stay readable. This
-    // is independent of whether the outer format used '?'; nested optionals
-    // and ranges rely on it. Presentation specs (e.g. 'x', precision, width)
-    // still go through to the underlying formatter via parse below.
+    // stay quoted (optional("text") / with n: "text") and nested values stay
+    // readable. Independent of whether the outer format used '?'. Presentation
+    // specs (e.g. 'x', precision, width) still go through to T below.
     detail::maybe_set_debug_format(underlying_, true);
     it = underlying_.parse(ctx);
     // Re-apply: some presentation types (notably 's') clear debug on parse.
@@ -553,6 +575,9 @@ struct formatter<std::optional<T>, Char,
       -> decltype(ctx.out()) {
     // Empty optional is always the bare word "none" — never quoted/escaped.
     if (!opt) return detail::write<Char>(ctx.out(), none);
+
+    // '{:n}': format only the contained value (no optional(...) wrapper).
+    if (no_wrapper_) return underlying_.format(*opt, ctx);
 
     auto out = ctx.out();
     out = detail::write<Char>(out, optional);
@@ -580,14 +605,15 @@ struct formatter<std::expected<T, E>, Char,
     auto out = ctx.out();
 
     if (value.has_value()) {
-      out = detail::write<Char>(out, "expected(");
+      // write_bytes: ASCII labels work for char and wchar_t.
+      out = detail::write_bytes<Char>(out, "expected(");
       if constexpr (!std::is_void<T>::value)
-        out = detail::write_escaped_alternative<Char>(out, *value, ctx);
+        out = detail::write_escaped_alternative<Char>(out, *value);
     } else {
-      out = detail::write<Char>(out, "unexpected(");
-      out = detail::write_escaped_alternative<Char>(out, value.error(), ctx);
+      out = detail::write_bytes<Char>(out, "unexpected(");
+      out = detail::write_escaped_alternative<Char>(out, value.error());
     }
-    *out++ = ')';
+    *out++ = static_cast<Char>(')');
     return out;
   }
 };
@@ -604,10 +630,10 @@ struct formatter<std::unexpected<E>, Char,
       -> decltype(ctx.out()) {
     auto out = ctx.out();
 
-    out = detail::write<Char>(out, "unexpected(");
-    out = detail::write_escaped_alternative<Char>(out, value.error(), ctx);
+    out = detail::write_bytes<Char>(out, "unexpected(");
+    out = detail::write_escaped_alternative<Char>(out, value.error());
 
-    *out++ = ')';
+    *out++ = static_cast<Char>(')');
     return out;
   }
 };
@@ -647,61 +673,128 @@ template <typename Char> struct formatter<std::monostate, Char> {
   template <typename FormatContext>
   FMT_CONSTEXPR auto format(const std::monostate&, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    return detail::write<Char>(ctx.out(), "monostate");
+    // write_bytes so the ASCII label works for char and wchar_t alike.
+    return detail::write_bytes<Char>(ctx.out(), "monostate");
   }
 };
 
+// Formats std::variant as variant(<active alternative>). Supports fill /
+// align / width like error_code (content is built first, then padded as a
+// string). '{:n}' drops the variant(...) wrapper (same idea as optional /
+// ranges). Presentation types for the active alternative are not accepted.
 template <typename Variant, typename Char>
 struct formatter<Variant, Char,
                  std::enable_if_t<std::conjunction_v<
                      is_variant_like<Variant>,
                      detail::is_variant_formattable<Variant, Char>>>> {
+ private:
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  bool no_wrapper_ = false;
+
+ public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    return ctx.begin();
+    auto it = ctx.begin(), end = ctx.end();
+    if (it == end || *it == '}') return it;
+
+    // 'n' may appear before or after fill/align/width ("{:n}", "{:n>10}",
+    // "{:>10n}"), same placement flexibility as exception's 't'.
+    if (it != end && *it == static_cast<Char>('n')) {
+      no_wrapper_ = true;
+      ++it;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == static_cast<Char>('n')) {
+      no_wrapper_ = true;
+      ++it;
+    }
+    return it;
   }
 
   template <typename FormatContext>
   FMT_CONSTEXPR20 auto format(const Variant& value, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    auto out = ctx.out();
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    if (specs.width == 0) return write(ctx.out(), value);
 
-    out = detail::write<Char>(out, "variant(");
+    // Build full content then apply width/align/fill.
+    auto buf = basic_memory_buffer<Char>();
+    write(basic_appender<Char>(buf), value);
+    return detail::write(
+        ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
+  }
+
+ private:
+  template <typename OutputIt>
+  FMT_CONSTEXPR20 auto write(OutputIt out, const Variant& value) const
+      -> OutputIt {
     FMT_TRY {
       std::visit(
           [&](const auto& v) {
-            out = detail::write_escaped_alternative<Char>(out, v, ctx);
+            // write_bytes: ASCII "variant(" works for char and wchar_t.
+            if (!no_wrapper_) out = detail::write_bytes<Char>(out, "variant(");
+            out = detail::write_escaped_alternative<Char>(out, v);
+            if (!no_wrapper_) *out++ = static_cast<Char>(')');
           },
           value);
     }
     FMT_CATCH(const std::bad_variant_access&) {
-      detail::write<Char>(out, "valueless by exception");
+      // Valueless: still bare "valueless by exception" with '{:n}', otherwise
+      // wrapped like a normal alternative.
+      if (!no_wrapper_) out = detail::write_bytes<Char>(out, "variant(");
+      out = detail::write_bytes<Char>(out, "valueless by exception");
+      if (!no_wrapper_) *out++ = static_cast<Char>(')');
     }
-    *out++ = ')';
     return out;
   }
 };
 
 #endif  // FMT_CPP_LIB_VARIANT
 
+// Formats std::error_code. Default is "category:value" (e.g. "generic:42").
+//
+//   {:s}   platform message text (ec.message())
+//   {:n}   value only — drop the "category:" prefix (same idea as optional /
+//          variant '{:n}' dropping their wrapper)
+//   {:?}   debug-quoted form of the chosen text
+//
+// Fill / align / width pad the whole resulting string (including after 's' /
+// 'n' / '?'). 'n' may appear before or after fill/align/width.
 template <> struct formatter<std::error_code> {
  private:
   format_specs specs_;
   detail::arg_ref<char> width_ref_;
   bool debug_ = false;
+  bool value_only_ = false;
 
  public:
   FMT_CONSTEXPR void set_debug_format(bool set = true) { debug_ = set; }
 
   FMT_CONSTEXPR auto parse(parse_context<>& ctx) -> const char* {
     auto it = ctx.begin(), end = ctx.end();
-    if (it == end) return it;
+    if (it == end || *it == '}') return it;
 
-    it = detail::parse_align(it, end, specs_);
-
-    char c = *it;
-    if (it != end && ((c >= '0' && c <= '9') || c == '{'))
-      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
-
+    // 'n' may appear before or after fill/align/width ("{:n}", "{:n>8}",
+    // "{:>8n}"), same placement as variant / exception 't'.
+    if (it != end && *it == 'n') {
+      value_only_ = true;
+      ++it;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == 'n') {
+      value_only_ = true;
+      ++it;
+    }
     if (it != end && *it == '?') {
       debug_ = true;
       ++it;
@@ -721,7 +814,11 @@ template <> struct formatter<std::error_code> {
                                 ctx);
     auto buf = memory_buffer();
     if (specs_.type() == presentation_type::string) {
+      // '{:s}' — message text; 'n' has no effect (no category prefix to drop).
       buf.append(ec.message());
+    } else if (value_only_) {
+      // '{:n}' — numeric value only.
+      detail::write<char>(appender(buf), ec.value());
     } else {
       buf.append(string_view(ec.category().name()));
       buf.push_back(':');
@@ -733,6 +830,7 @@ template <> struct formatter<std::error_code> {
       detail::write_escaped_string<char>(std::back_inserter(quoted), str);
       str = string_view(quoted.data(), quoted.size());
     }
+    // Width / align / fill always apply to the full content string.
     return detail::write<char>(ctx.out(), str, specs);
   }
 };

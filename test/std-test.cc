@@ -160,6 +160,23 @@ TEST(std_test, optional) {
   EXPECT_EQ(fmt::format("{:?}", std::optional{42}), "optional(42)");
   EXPECT_EQ(fmt::format("{:.{}f}", std::optional{3.14}, 1), "optional(3.1)");
 
+  // '{:n}' drops the optional(...) wrapper (same idea as ranges' {:n}).
+  EXPECT_EQ(fmt::format("{:n}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:nx}", std::optional{42}), "2a");
+  EXPECT_EQ(fmt::format("{:n#x}", std::optional{42}), "0x2a");
+  EXPECT_EQ(fmt::format("{:n*>8}", std::optional{42}), "******42");
+  EXPECT_EQ(fmt::format("{:?n}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:n?}", std::optional{42}), "42");
+  EXPECT_EQ(fmt::format("{:n}", std::optional<int>{}), "none");
+  EXPECT_EQ(fmt::format("{:n}", std::optional{std::string{"hi"}}), "\"hi\"");
+  EXPECT_EQ(fmt::format("{:n}", std::optional{'C'}), "\'C\'");
+  EXPECT_EQ(
+      fmt::format("{:n}", std::optional<std::optional<int>>{{42}}),
+      "optional(42)");
+  // Nested range: first 'n' is optional-level, second reaches the vector.
+  EXPECT_EQ(fmt::format("{:nn}", std::optional{std::vector{1, 2, 3}}),
+            "1, 2, 3");
+
   // Contained strings/chars are always in debug form (quoted), even without
   // '?' and even with a presentation type like 's' that would otherwise clear
   // debug formatting on the underlying string formatter.
@@ -322,6 +339,24 @@ TEST(std_test, variant) {
   EXPECT_EQ(fmt::format("{}", v2), "variant(\"hello\")");
   EXPECT_EQ(fmt::format("{}", v3), "variant('i')");
 
+  // '{:n}' drops the variant(...) wrapper (same idea as optional / ranges).
+  EXPECT_EQ(fmt::format("{:n}", v0), "42");
+  EXPECT_EQ(fmt::format("{:n}", v1), "1.5");
+  EXPECT_EQ(fmt::format("{:n}", v2), "\"hello\"");
+  EXPECT_EQ(fmt::format("{:n}", v3), "'i'");
+
+  // Width / align pad the full content string (same model as error_code).
+  // "variant(42)" is 11 characters.
+  EXPECT_EQ(fmt::format("{:>15}", v0), "    variant(42)");
+  EXPECT_EQ(fmt::format("{:15}", v0), "variant(42)    ");
+  EXPECT_EQ(fmt::format("{:*>15}", v0), "****variant(42)");
+  EXPECT_EQ(fmt::format("{:*>{}}", v0, 15), "****variant(42)");
+  EXPECT_EQ(fmt::format("{:<20}", v2), "variant(\"hello\")    ");
+  // With 'n', width pads the unwrapped alternative.
+  EXPECT_EQ(fmt::format("{:n*>8}", v0), "******42");
+  EXPECT_EQ(fmt::format("{:*>8n}", v0), "******42");
+  EXPECT_EQ(fmt::format("{:n>6}", v0), "    42");
+
   struct unformattable {};
   EXPECT_FALSE((fmt::is_formattable<unformattable>::value));
   EXPECT_FALSE((fmt::is_formattable<std::variant<unformattable>>::value));
@@ -336,7 +371,9 @@ TEST(std_test, variant) {
   V1 v5{std::in_place_index<1>, "yes, this is variant"};
 
   EXPECT_EQ(fmt::format("{}", v4), "variant(monostate)");
+  EXPECT_EQ(fmt::format("{:n}", v4), "monostate");
   EXPECT_EQ(fmt::format("{}", v5), "variant(\"yes, this is variant\")");
+  EXPECT_EQ(fmt::format("{:n}", v5), "\"yes, this is variant\"");
 
   volatile int i = 42;  // Test compile error before GCC 11 described in #3068.
   EXPECT_EQ(fmt::format("{}", i), "42");
@@ -351,6 +388,9 @@ TEST(std_test, variant) {
   // v6 is now valueless by exception
 
   EXPECT_EQ(fmt::format("{}", v6), "variant(valueless by exception)");
+  EXPECT_EQ(fmt::format("{:n}", v6), "valueless by exception");
+  // "variant(valueless by exception)" is 31 characters.
+  EXPECT_EQ(fmt::format("{:*>35}", v6), "****variant(valueless by exception)");
 
 #endif
 }
@@ -385,8 +425,26 @@ TEST(std_test, error_code) {
             "system:-42");
   auto ec = std::make_error_code(std::errc::value_too_large);
   EXPECT_EQ(fmt::format("{:s}", ec), ec.message());
+
+  // '{:n}' drops the "category:" prefix (value only).
+  EXPECT_EQ(fmt::format("{:n}", std::error_code(42, generic)), "42");
+  EXPECT_EQ(fmt::format("{:n}", std::error_code(-42, fmt::system_category())),
+            "-42");
+  EXPECT_EQ(fmt::format("{:n*>6}", std::error_code(42, generic)), "****42");
+  EXPECT_EQ(fmt::format("{:*>6n}", std::error_code(42, generic)), "****42");
+  // 'n' does not change the message form.
+  EXPECT_EQ(fmt::format("{:ns}", ec), ec.message());
+
+  // Width / align pad the whole content, including with presentation types.
   EXPECT_EQ(fmt::format("{:?}", std::error_code(42, generic)),
             "\"generic:42\"");
+  EXPECT_EQ(fmt::format("{:>16?}", std::error_code(42, generic)),
+            "    \"generic:42\"");
+  // Presentation type after fill/align/width; width pads the full message.
+  auto msg = ec.message();
+  auto padded_s = fmt::format("{:*>{}}", msg, msg.size() + 3);
+  EXPECT_EQ(fmt::format("{:*>{}s}", ec, msg.size() + 3), padded_s);
+
   EXPECT_EQ(fmt::format("{}",
                         std::map<std::error_code, int>{
                             {std::error_code(42, generic), 0}}),
