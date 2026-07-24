@@ -322,6 +322,14 @@ TEST(std_test, variant) {
   EXPECT_EQ(fmt::format("{}", v2), "variant(\"hello\")");
   EXPECT_EQ(fmt::format("{}", v3), "variant('i')");
 
+  // Width / align pad the full "variant(...)" string (same model as error_code).
+  // "variant(42)" is 11 characters.
+  EXPECT_EQ(fmt::format("{:>15}", v0), "    variant(42)");
+  EXPECT_EQ(fmt::format("{:15}", v0), "variant(42)    ");
+  EXPECT_EQ(fmt::format("{:*>15}", v0), "****variant(42)");
+  EXPECT_EQ(fmt::format("{:*>{}}", v0, 15), "****variant(42)");
+  EXPECT_EQ(fmt::format("{:<20}", v2), "variant(\"hello\")    ");
+
   struct unformattable {};
   EXPECT_FALSE((fmt::is_formattable<unformattable>::value));
   EXPECT_FALSE((fmt::is_formattable<std::variant<unformattable>>::value));
@@ -351,6 +359,8 @@ TEST(std_test, variant) {
   // v6 is now valueless by exception
 
   EXPECT_EQ(fmt::format("{}", v6), "variant(valueless by exception)");
+  // "variant(valueless by exception)" is 31 characters.
+  EXPECT_EQ(fmt::format("{:*>35}", v6), "****variant(valueless by exception)");
 
 #endif
 }

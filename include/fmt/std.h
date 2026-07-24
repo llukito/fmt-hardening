@@ -194,16 +194,20 @@ void write_escaped_path(basic_memory_buffer<Char>& quoted,
 
 #if defined(__cpp_lib_expected) || FMT_CPP_LIB_VARIANT
 
-template <typename Char, typename OutputIt, typename T, typename FormatContext>
-FMT_CONSTEXPR auto write_escaped_alternative(OutputIt out, const T& v,
-                                             FormatContext& ctx) -> OutputIt {
+// Writes a variant/expected alternative in debug form (strings/chars escaped).
+// Formats through a local context so the result always lands on `out` (needed
+// when the caller buffers first and then applies outer fill/align/width).
+template <typename Char, typename OutputIt, typename T>
+FMT_CONSTEXPR auto write_escaped_alternative(OutputIt out, const T& v)
+    -> OutputIt {
   if constexpr (has_to_string_view<T>::value)
     return write_escaped_string<Char>(out, detail::to_string_view(v));
   if constexpr (std::is_same_v<T, Char>) return write_escaped_char(out, v);
 
   formatter<std::remove_cv_t<T>, Char> underlying;
   maybe_set_debug_format(underlying, true);
-  return underlying.format(v, ctx);
+  auto fctx = basic_format_context<OutputIt, Char>(out, {}, {});
+  return underlying.format(v, fctx);
 }
 #endif
 
@@ -582,10 +586,10 @@ struct formatter<std::expected<T, E>, Char,
     if (value.has_value()) {
       out = detail::write<Char>(out, "expected(");
       if constexpr (!std::is_void<T>::value)
-        out = detail::write_escaped_alternative<Char>(out, *value, ctx);
+        out = detail::write_escaped_alternative<Char>(out, *value);
     } else {
       out = detail::write<Char>(out, "unexpected(");
-      out = detail::write_escaped_alternative<Char>(out, value.error(), ctx);
+      out = detail::write_escaped_alternative<Char>(out, value.error());
     }
     *out++ = ')';
     return out;
@@ -605,7 +609,7 @@ struct formatter<std::unexpected<E>, Char,
     auto out = ctx.out();
 
     out = detail::write<Char>(out, "unexpected(");
-    out = detail::write_escaped_alternative<Char>(out, value.error(), ctx);
+    out = detail::write_escaped_alternative<Char>(out, value.error());
 
     *out++ = ')';
     return out;
@@ -651,32 +655,60 @@ template <typename Char> struct formatter<std::monostate, Char> {
   }
 };
 
+// Formats std::variant as variant(<active alternative>). Supports fill /
+// align / width like error_code, type_info, and exception (content is built
+// first, then padded as a string). Presentation types are not accepted.
 template <typename Variant, typename Char>
 struct formatter<Variant, Char,
                  std::enable_if_t<std::conjunction_v<
                      is_variant_like<Variant>,
                      detail::is_variant_formattable<Variant, Char>>>> {
+ private:
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+
+ public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    return ctx.begin();
+    auto it = ctx.begin(), end = ctx.end();
+    if (it == end || *it == '}') return it;
+
+    it = detail::parse_align(it, end, specs_);
+    if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    return it;
   }
 
   template <typename FormatContext>
   FMT_CONSTEXPR20 auto format(const Variant& value, FormatContext& ctx) const
       -> decltype(ctx.out()) {
-    auto out = ctx.out();
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    if (specs.width == 0) return write(ctx.out(), value);
 
+    // Build full "variant(...)" then apply width/align/fill.
+    auto buf = basic_memory_buffer<Char>();
+    write(basic_appender<Char>(buf), value);
+    return detail::write(
+        ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
+  }
+
+ private:
+  template <typename OutputIt>
+  FMT_CONSTEXPR20 auto write(OutputIt out, const Variant& value) const
+      -> OutputIt {
     out = detail::write<Char>(out, "variant(");
     FMT_TRY {
       std::visit(
           [&](const auto& v) {
-            out = detail::write_escaped_alternative<Char>(out, v, ctx);
+            out = detail::write_escaped_alternative<Char>(out, v);
           },
           value);
     }
     FMT_CATCH(const std::bad_variant_access&) {
-      detail::write<Char>(out, "valueless by exception");
+      out = detail::write<Char>(out, "valueless by exception");
     }
-    *out++ = ')';
+    *out++ = static_cast<Char>(')');
     return out;
   }
 };
