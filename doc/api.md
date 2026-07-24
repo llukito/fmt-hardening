@@ -532,6 +532,10 @@ feature](https://en.cppreference.com/w/cpp/feature_test).
     fmt::print("{}", std::variant<char, float>('x'));
     // Output: variant('x')
 
+    // '{:n}' drops the variant(...) wrapper (like optional / ranges):
+    fmt::print("{:n}", std::variant<char, float>('x'));
+    // Output: 'x'
+
     fmt::print("{}", std::variant<std::monostate, char>());
     // Output: variant(monostate)
 

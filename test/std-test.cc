@@ -339,13 +339,23 @@ TEST(std_test, variant) {
   EXPECT_EQ(fmt::format("{}", v2), "variant(\"hello\")");
   EXPECT_EQ(fmt::format("{}", v3), "variant('i')");
 
-  // Width / align pad the full "variant(...)" string (same model as error_code).
+  // '{:n}' drops the variant(...) wrapper (same idea as optional / ranges).
+  EXPECT_EQ(fmt::format("{:n}", v0), "42");
+  EXPECT_EQ(fmt::format("{:n}", v1), "1.5");
+  EXPECT_EQ(fmt::format("{:n}", v2), "\"hello\"");
+  EXPECT_EQ(fmt::format("{:n}", v3), "'i'");
+
+  // Width / align pad the full content string (same model as error_code).
   // "variant(42)" is 11 characters.
   EXPECT_EQ(fmt::format("{:>15}", v0), "    variant(42)");
   EXPECT_EQ(fmt::format("{:15}", v0), "variant(42)    ");
   EXPECT_EQ(fmt::format("{:*>15}", v0), "****variant(42)");
   EXPECT_EQ(fmt::format("{:*>{}}", v0, 15), "****variant(42)");
   EXPECT_EQ(fmt::format("{:<20}", v2), "variant(\"hello\")    ");
+  // With 'n', width pads the unwrapped alternative.
+  EXPECT_EQ(fmt::format("{:n*>8}", v0), "******42");
+  EXPECT_EQ(fmt::format("{:*>8n}", v0), "******42");
+  EXPECT_EQ(fmt::format("{:n>6}", v0), "    42");
 
   struct unformattable {};
   EXPECT_FALSE((fmt::is_formattable<unformattable>::value));
@@ -361,7 +371,9 @@ TEST(std_test, variant) {
   V1 v5{std::in_place_index<1>, "yes, this is variant"};
 
   EXPECT_EQ(fmt::format("{}", v4), "variant(monostate)");
+  EXPECT_EQ(fmt::format("{:n}", v4), "monostate");
   EXPECT_EQ(fmt::format("{}", v5), "variant(\"yes, this is variant\")");
+  EXPECT_EQ(fmt::format("{:n}", v5), "\"yes, this is variant\"");
 
   volatile int i = 42;  // Test compile error before GCC 11 described in #3068.
   EXPECT_EQ(fmt::format("{}", i), "42");
@@ -376,6 +388,7 @@ TEST(std_test, variant) {
   // v6 is now valueless by exception
 
   EXPECT_EQ(fmt::format("{}", v6), "variant(valueless by exception)");
+  EXPECT_EQ(fmt::format("{:n}", v6), "valueless by exception");
   // "variant(valueless by exception)" is 31 characters.
   EXPECT_EQ(fmt::format("{:*>35}", v6), "****variant(valueless by exception)");
 

@@ -677,8 +677,9 @@ template <typename Char> struct formatter<std::monostate, Char> {
 };
 
 // Formats std::variant as variant(<active alternative>). Supports fill /
-// align / width like error_code, type_info, and exception (content is built
-// first, then padded as a string). Presentation types are not accepted.
+// align / width like error_code (content is built first, then padded as a
+// string). '{:n}' drops the variant(...) wrapper (same idea as optional /
+// ranges). Presentation types for the active alternative are not accepted.
 template <typename Variant, typename Char>
 struct formatter<Variant, Char,
                  std::enable_if_t<std::conjunction_v<
@@ -687,15 +688,28 @@ struct formatter<Variant, Char,
  private:
   format_specs specs_;
   detail::arg_ref<Char> width_ref_;
+  bool no_wrapper_ = false;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
     auto it = ctx.begin(), end = ctx.end();
     if (it == end || *it == '}') return it;
 
-    it = detail::parse_align(it, end, specs_);
-    if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
-      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    // 'n' may appear before or after fill/align/width ("{:n}", "{:n>10}",
+    // "{:>10n}"), same placement flexibility as exception's 't'.
+    if (it != end && *it == static_cast<Char>('n')) {
+      no_wrapper_ = true;
+      ++it;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == static_cast<Char>('n')) {
+      no_wrapper_ = true;
+      ++it;
+    }
     return it;
   }
 
@@ -707,7 +721,7 @@ struct formatter<Variant, Char,
                                 ctx);
     if (specs.width == 0) return write(ctx.out(), value);
 
-    // Build full "variant(...)" then apply width/align/fill.
+    // Build full content then apply width/align/fill.
     auto buf = basic_memory_buffer<Char>();
     write(basic_appender<Char>(buf), value);
     return detail::write(
@@ -718,18 +732,22 @@ struct formatter<Variant, Char,
   template <typename OutputIt>
   FMT_CONSTEXPR20 auto write(OutputIt out, const Variant& value) const
       -> OutputIt {
-    out = detail::write<Char>(out, "variant(");
     FMT_TRY {
       std::visit(
           [&](const auto& v) {
+            if (!no_wrapper_) out = detail::write<Char>(out, "variant(");
             out = detail::write_escaped_alternative<Char>(out, v);
+            if (!no_wrapper_) *out++ = static_cast<Char>(')');
           },
           value);
     }
     FMT_CATCH(const std::bad_variant_access&) {
+      // Valueless: still bare "valueless by exception" with '{:n}', otherwise
+      // wrapped like a normal alternative.
+      if (!no_wrapper_) out = detail::write<Char>(out, "variant(");
       out = detail::write<Char>(out, "valueless by exception");
+      if (!no_wrapper_) *out++ = static_cast<Char>(')');
     }
-    *out++ = static_cast<Char>(')');
     return out;
   }
 };
