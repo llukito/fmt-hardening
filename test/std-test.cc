@@ -425,8 +425,26 @@ TEST(std_test, error_code) {
             "system:-42");
   auto ec = std::make_error_code(std::errc::value_too_large);
   EXPECT_EQ(fmt::format("{:s}", ec), ec.message());
+
+  // '{:n}' drops the "category:" prefix (value only).
+  EXPECT_EQ(fmt::format("{:n}", std::error_code(42, generic)), "42");
+  EXPECT_EQ(fmt::format("{:n}", std::error_code(-42, fmt::system_category())),
+            "-42");
+  EXPECT_EQ(fmt::format("{:n*>6}", std::error_code(42, generic)), "****42");
+  EXPECT_EQ(fmt::format("{:*>6n}", std::error_code(42, generic)), "****42");
+  // 'n' does not change the message form.
+  EXPECT_EQ(fmt::format("{:ns}", ec), ec.message());
+
+  // Width / align pad the whole content, including with presentation types.
   EXPECT_EQ(fmt::format("{:?}", std::error_code(42, generic)),
             "\"generic:42\"");
+  EXPECT_EQ(fmt::format("{:>16?}", std::error_code(42, generic)),
+            "    \"generic:42\"");
+  // Presentation type after fill/align/width; width pads the full message.
+  auto msg = ec.message();
+  auto padded_s = fmt::format("{:*>{}}", msg, msg.size() + 3);
+  EXPECT_EQ(fmt::format("{:*>{}s}", ec, msg.size() + 3), padded_s);
+
   EXPECT_EQ(fmt::format("{}",
                         std::map<std::error_code, int>{
                             {std::error_code(42, generic), 0}}),

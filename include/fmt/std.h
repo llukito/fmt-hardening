@@ -754,25 +754,44 @@ struct formatter<Variant, Char,
 
 #endif  // FMT_CPP_LIB_VARIANT
 
+// Formats std::error_code. Default is "category:value" (e.g. "generic:42").
+//
+//   {:s}   platform message text (ec.message())
+//   {:n}   value only — drop the "category:" prefix (same idea as optional /
+//          variant '{:n}' dropping their wrapper)
+//   {:?}   debug-quoted form of the chosen text
+//
+// Fill / align / width pad the whole resulting string (including after 's' /
+// 'n' / '?'). 'n' may appear before or after fill/align/width.
 template <> struct formatter<std::error_code> {
  private:
   format_specs specs_;
   detail::arg_ref<char> width_ref_;
   bool debug_ = false;
+  bool value_only_ = false;
 
  public:
   FMT_CONSTEXPR void set_debug_format(bool set = true) { debug_ = set; }
 
   FMT_CONSTEXPR auto parse(parse_context<>& ctx) -> const char* {
     auto it = ctx.begin(), end = ctx.end();
-    if (it == end) return it;
+    if (it == end || *it == '}') return it;
 
-    it = detail::parse_align(it, end, specs_);
-
-    char c = *it;
-    if (it != end && ((c >= '0' && c <= '9') || c == '{'))
-      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
-
+    // 'n' may appear before or after fill/align/width ("{:n}", "{:n>8}",
+    // "{:>8n}"), same placement as variant / exception 't'.
+    if (it != end && *it == 'n') {
+      value_only_ = true;
+      ++it;
+    }
+    if (it != end && *it != '}') {
+      it = detail::parse_align(it, end, specs_);
+      if (it != end && ((*it >= '0' && *it <= '9') || *it == '{'))
+        it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+    }
+    if (it != end && *it == 'n') {
+      value_only_ = true;
+      ++it;
+    }
     if (it != end && *it == '?') {
       debug_ = true;
       ++it;
@@ -792,7 +811,11 @@ template <> struct formatter<std::error_code> {
                                 ctx);
     auto buf = memory_buffer();
     if (specs_.type() == presentation_type::string) {
+      // '{:s}' — message text; 'n' has no effect (no category prefix to drop).
       buf.append(ec.message());
+    } else if (value_only_) {
+      // '{:n}' — numeric value only.
+      detail::write<char>(appender(buf), ec.value());
     } else {
       buf.append(string_view(ec.category().name()));
       buf.push_back(':');
@@ -804,6 +827,7 @@ template <> struct formatter<std::error_code> {
       detail::write_escaped_string<char>(std::back_inserter(quoted), str);
       str = string_view(quoted.data(), quoted.size());
     }
+    // Width / align / fill always apply to the full content string.
     return detail::write<char>(ctx.out(), str, specs);
   }
 };

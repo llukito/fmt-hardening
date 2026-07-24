@@ -519,6 +519,29 @@ chrono-format-specifications).
 
 ::: ptr(const std::shared_ptr<T>&)
 
+### Error codes
+
+`std::error_code` formats as `category:value` by default. Specifiers:
+
+- `s` — the platform error message (`ec.message()`), not the category/value pair
+- `n` — value only (drop the `category:` prefix), same idea as optional /
+  variant `n` dropping their wrapper
+- `?` — debug-quoted form of the chosen text
+- fill / align / width — pad the **whole** resulting string (works with `s`,
+  `n`, and `?`)
+
+**Example**:
+
+    #include <fmt/std.h>
+    #include <system_error>
+
+    auto ec = std::make_error_code(std::errc::value_too_large);
+    fmt::print("{}", ec);     // e.g. generic:75  (platform-specific value)
+    fmt::print("{:s}", ec);   // e.g. Value too large to be stored in data type
+    fmt::print("{:n}", ec);   // e.g. 75
+    fmt::print("{:>12}", std::error_code(42, std::generic_category()));
+    // Output:   generic:42
+
 ### Variants
 
 A `std::variant` can be formatted only if every alternative is
