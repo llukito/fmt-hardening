@@ -66,6 +66,9 @@ TEST(ranges_test, format_vector) {
   EXPECT_EQ(fmt::format("{:n}", vvc), "['a', 'b', 'c'], ['a', 'b', 'c']");
   EXPECT_EQ(fmt::format("{:n:n}", vvc), "'a', 'b', 'c', 'a', 'b', 'c'");
   EXPECT_EQ(fmt::format("{:n:n:}", vvc), "a, b, c, a, b, c");
+  // Consecutive 'n's strip one bracket level each (like optional '{:nn}').
+  EXPECT_EQ(fmt::format("{:nn}", vvc), "'a', 'b', 'c', 'a', 'b', 'c'");
+  EXPECT_EQ(fmt::format("{:nn:}", vvc), "a, b, c, a, b, c");
 
   EXPECT_FALSE(fmt::is_formattable<unformattable>::value);
   EXPECT_FALSE(fmt::is_formattable<std::vector<unformattable>>::value);
@@ -76,6 +79,25 @@ TEST(ranges_test, format_nested_vector) {
   EXPECT_EQ(fmt::format("{}", v), "[[1, 2], [3, 5], [7, 11]]");
   EXPECT_EQ(fmt::format("{:::#x}", v), "[[0x1, 0x2], [0x3, 0x5], [0x7, 0xb]]");
   EXPECT_EQ(fmt::format("{:n:n:#x}", v), "0x1, 0x2, 0x3, 0x5, 0x7, 0xb");
+  // '{:nn}' == '{:n:n}': strip outer and inner brackets.
+  EXPECT_EQ(fmt::format("{:n}", v), "[1, 2], [3, 5], [7, 11]");
+  EXPECT_EQ(fmt::format("{:nn}", v), "1, 2, 3, 5, 7, 11");
+  EXPECT_EQ(fmt::format("{:nn:#x}", v), "0x1, 0x2, 0x3, 0x5, 0x7, 0xb");
+
+  // Three levels: each 'n' peels one layer.
+  auto vvv = std::vector<std::vector<std::vector<int>>>{
+      {{1, 2}, {3}},
+      {{4}},
+  };
+  EXPECT_EQ(fmt::format("{}", vvv), "[[[1, 2], [3]], [[4]]]");
+  EXPECT_EQ(fmt::format("{:n}", vvv), "[[1, 2], [3]], [[4]]");
+  EXPECT_EQ(fmt::format("{:nn}", vvv), "[1, 2], [3], [4]");
+  EXPECT_EQ(fmt::format("{:nnn}", vvv), "1, 2, 3, 4");
+  EXPECT_EQ(fmt::format("{:n:n:n}", vvv), "1, 2, 3, 4");
+
+  // Single-level range: second 'n' is not valid (no nested range formatter).
+  EXPECT_THROW((void)fmt::format(fmt::runtime("{:nn}"), std::vector{1, 2}),
+               fmt::format_error);
 }
 
 TEST(ranges_test, to_string_vector) {
@@ -86,9 +108,40 @@ TEST(ranges_test, to_string_vector) {
 TEST(ranges_test, format_map) {
   auto m = std::map<std::string, int>{{"one", 1}, {"two", 2}};
   EXPECT_EQ(fmt::format("{}", m), "{\"one\": 1, \"two\": 2}");
-  EXPECT_EQ(fmt::format("{:n}", m), "\"one\": 1, \"two\": 2");
+  // '{:n}' drops braces; pairs use "; " so nested maps stay readable (below).
+  EXPECT_EQ(fmt::format("{:n}", m), "\"one\": 1; \"two\": 2");
 
   EXPECT_FALSE((fmt::is_formattable<std::map<int, unformattable>>::value));
+}
+
+// Nested 'n' with maps: without a distinct pair separator, {:nn} on a
+// vector of maps flattened to "a": 1, "b": 2, "c": 3 and lost map boundaries.
+TEST(ranges_test, format_nested_map_n) {
+  using M = std::map<std::string, int>;
+  auto v = std::vector<M>{
+      M{{"a", 1}, {"b", 2}},
+      M{{"c", 3}},
+  };
+  EXPECT_EQ(fmt::format("{}", v), "[{\"a\": 1, \"b\": 2}, {\"c\": 3}]");
+  // Outer n only: each map keeps its braces.
+  EXPECT_EQ(fmt::format("{:n}", v), "{\"a\": 1, \"b\": 2}, {\"c\": 3}");
+  // Outer + map n: braces gone; "; " between pairs, ", " between maps.
+  EXPECT_EQ(fmt::format("{:nn}", v), "\"a\": 1; \"b\": 2, \"c\": 3");
+  EXPECT_EQ(fmt::format("{:n:n}", v), "\"a\": 1; \"b\": 2, \"c\": 3");
+
+  // Single-entry maps still work.
+  auto v1 = std::vector<M>{M{{"x", 1}}, M{{"y", 2}}};
+  EXPECT_EQ(fmt::format("{:nn}", v1), "\"x\": 1, \"y\": 2");
+
+  // Empty maps: just the outer separator between nothing.
+  auto v_empty = std::vector<M>{M{}, M{}};
+  EXPECT_EQ(fmt::format("{:nn}", v_empty), ", ");
+
+  // Vector / set nesting unchanged (still ", " at every level).
+  auto vs = std::vector<std::set<int>>{{1, 2}, {3}};
+  EXPECT_EQ(fmt::format("{:nn}", vs), "1, 2, 3");
+  auto vv = std::vector<std::vector<int>>{{1, 2}, {3, 4}};
+  EXPECT_EQ(fmt::format("{:nn}", vv), "1, 2, 3, 4");
 }
 
 struct test_map_value {};

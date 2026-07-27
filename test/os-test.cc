@@ -37,21 +37,40 @@ auto safe_fopen(const char* filename, const char* mode) -> FILE* {
 
 #  include <windows.h>
 
+// Strip trailing whitespace the same way system_message does, without
+// assuming the message always ends with exactly "\r\n".
+static auto trim_windows_message(LPWSTR message, DWORD length)
+    -> wstring_view {
+  while (length != 0) {
+    wchar_t c = message[length - 1];
+    if (c != L' ' && c != L'\n' && c != L'\r' && c != L'\t') break;
+    --length;
+  }
+  return wstring_view(message, length);
+}
+
 TEST(os_test, format_windows_error) {
   LPWSTR message = nullptr;
   auto result = FormatMessageW(
       FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
           FORMAT_MESSAGE_IGNORE_INSERTS,
-      nullptr, ERROR_FILE_EXISTS, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-      reinterpret_cast<LPWSTR>(&message), 0, nullptr);
+      nullptr, ERROR_FILE_EXISTS, 0, reinterpret_cast<LPWSTR>(&message), 0,
+      nullptr);
+  ASSERT_NE(result, 0u);
+  ASSERT_NE(message, nullptr);
   auto utf8_message =
-      fmt::detail::to_utf8<wchar_t>(wstring_view(message, result - 2));
+      fmt::detail::to_utf8<wchar_t>(trim_windows_message(message, result));
   LocalFree(message);
   fmt::memory_buffer actual_message;
   fmt::detail::format_windows_error(actual_message, ERROR_FILE_EXISTS, "test");
   EXPECT_EQ(fmt::format("test: {}", utf8_message.str()),
             fmt::to_string(actual_message));
-  actual_message.resize(0);
+  // Must not contain embedded NULs or trailing CR/LF from FormatMessage.
+  auto s = fmt::to_string(actual_message);
+  EXPECT_EQ(s.find('\0'), std::string::npos);
+  EXPECT_FALSE(s.empty());
+  EXPECT_NE(s.back(), '\n');
+  EXPECT_NE(s.back(), '\r');
 }
 
 TEST(os_test, format_long_windows_error) {
@@ -63,15 +82,14 @@ TEST(os_test, format_long_windows_error) {
   auto result = FormatMessageW(
       FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
           FORMAT_MESSAGE_IGNORE_INSERTS,
-      nullptr, static_cast<DWORD>(provisioning_not_allowed),
-      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      nullptr, static_cast<DWORD>(provisioning_not_allowed), 0,
       reinterpret_cast<LPWSTR>(&message), 0, nullptr);
   if (result == 0) {
-    LocalFree(message);
+    if (message) LocalFree(message);
     return;
   }
   auto utf8_message =
-      fmt::detail::to_utf8<wchar_t>(wstring_view(message, result - 2));
+      fmt::detail::to_utf8<wchar_t>(trim_windows_message(message, result));
   LocalFree(message);
   fmt::memory_buffer actual_message;
   fmt::detail::format_windows_error(actual_message, provisioning_not_allowed,
@@ -100,6 +118,42 @@ TEST(os_test, report_windows_error) {
   EXPECT_WRITE(stderr,
                fmt::report_windows_error(ERROR_FILE_EXISTS, "test error"),
                fmt::to_string(out));
+}
+
+// Invalid / unknown codes must not crash or produce garbage; they fall back
+// to a generic error description via format_error_code.
+TEST(os_test, windows_error_invalid_code) {
+  fmt::memory_buffer out;
+  // -1 and other non-resolvable codes should not throw or overrun.
+  fmt::detail::format_windows_error(out, -1, "prefix");
+  auto s = fmt::to_string(out);
+  EXPECT_FALSE(s.empty());
+  EXPECT_EQ(s.find('\0'), std::string::npos);
+  EXPECT_THAT(s, HasSubstr("prefix"));
+
+  out.resize(0);
+  fmt::detail::format_windows_error(out, 0x7fffffff, "x");
+  s = fmt::to_string(out);
+  EXPECT_FALSE(s.empty());
+  EXPECT_EQ(s.find('\0'), std::string::npos);
+
+  // FACILITY_WIN32 HRESULT for ERROR_ACCESS_DENIED (5) should still resolve.
+  out.resize(0);
+  fmt::detail::format_windows_error(out, static_cast<int>(0x80070005L), "hr");
+  s = fmt::to_string(out);
+  EXPECT_THAT(s, HasSubstr("hr: "));
+  EXPECT_EQ(s.find('\0'), std::string::npos);
+  EXPECT_GT(s.size(), std::strlen("hr: "));
+
+  // system_category().message must be well-formed for the same codes.
+  auto& cat = fmt::system_category();
+  EXPECT_FALSE(cat.message(-1).empty());
+  EXPECT_EQ(cat.message(-1).find('\0'), std::string::npos);
+  auto denied = cat.message(ERROR_ACCESS_DENIED);
+  EXPECT_FALSE(denied.empty());
+  EXPECT_EQ(denied.find('\0'), std::string::npos);
+  EXPECT_EQ(denied.find('\r'), std::string::npos);
+  EXPECT_EQ(denied.find('\n'), std::string::npos);
 }
 
 #  if FMT_USE_FCNTL && !defined(__MINGW32__)

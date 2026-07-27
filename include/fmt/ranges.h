@@ -451,11 +451,13 @@ struct range_formatter<
   //
   //   {:}           default: [e0, e1, …], elements in debug form
   //   {:n}          no brackets; separator stays ", "
+  //   {:nn}         each 'n' strips one nesting level of brackets (same idea
+  //                 as optional's {:nn}); equivalent to {:n:n} for two levels
   //   {:s}          character ranges only: concatenate as "e0e1…"
   //   {:?s}         character ranges only: one debug-escaped string of all
   //                 elements (no brackets / separator)
-  //   {:…:elem}     after optional n, a ':' starts element format specs
-  //                 (e.g. {:n:#x} → 0x1, 0x2, 0x3)
+  //   {:…:elem}     after optional n(s), a ':' starts element format specs
+  //                 (e.g. {:n:#x} → 0x1, 0x2, 0x3; {:n:n} still works)
   //
   // Element debug form is on by default and turned off when element specs or
   // '{:s}' are present.
@@ -470,7 +472,9 @@ struct range_formatter<
 
     const char spec = detail::to_ascii(*it);
 
-    // '{:n}' — suppress surrounding brackets only.
+    // '{:n}' — suppress surrounding brackets only. Further 'n's (e.g. '{:nn}')
+    // are left for the element formatter so nested ranges can strip one level
+    // each, matching optional's stacked '{:nn}'.
     if (spec == 'n') {
       this->set_brackets({}, {});
       ++it;
@@ -502,12 +506,17 @@ struct range_formatter<
     }
     // else: no range-level letter (e.g. '{::d}' starts with ':').
 
-    // Optional nested element specs after ':'.
+    // Optional nested element specs after ':', or another 'n' for a nested
+    // range (forwarded to underlying_.parse without requiring a colon).
     if (it != end && *it != '}') {
-      if (*it != ':') report_error("invalid format specifier");
-      // Explicit element specs: do not force debug on elements.
-      detail::maybe_set_debug_format(underlying_, false);
-      ++it;
+      if (*it == ':') {
+        // Explicit element specs: do not force debug on elements.
+        detail::maybe_set_debug_format(underlying_, false);
+        ++it;
+      } else if (detail::to_ascii(*it) != 'n') {
+        report_error("invalid format specifier");
+      }
+      // else *it == 'n': leave for nested range_formatter.
     }
 
     ctx.advance_to(it);
@@ -579,6 +588,15 @@ struct formatter<
 };
 
 // A map formatter.
+//
+//   {}     {"k": v, "k2": v2}
+//   {:n}   "k": v; "k2": v2
+//
+// '{:n}' drops the surrounding braces. Key/value pairs are joined with "; "
+// (not ", ") so that when maps are nested inside another range that also uses
+// 'n' — e.g. vector<map> with '{:nn}' — outer ", " still marks map boundaries:
+//   [{"a": 1, "b": 2}, {"c": 3}]  with {:nn}  →  "a": 1; "b": 2, "c": 3
+// With a comma between pairs that would read as one flat entry list.
 template <typename R, typename Char>
 struct formatter<
     R, Char,
@@ -600,6 +618,9 @@ struct formatter<
     auto it = ctx.begin();
     auto end = ctx.end();
     if (it != end) {
+      // One 'n' clears this map's braces (same as ranges). A following 'n'
+      // is left for nested value formatters when present (e.g. map of maps
+      // is not handled here — values use pair formatters).
       if (detail::to_ascii(*it) == 'n') {
         no_delimiters_ = true;
         ++it;
@@ -620,7 +641,13 @@ struct formatter<
     basic_string_view<Char> open = detail::string_literal<Char, '{'>{};
     if (!no_delimiters_) out = detail::copy<Char>(open, out);
     int i = 0;
-    basic_string_view<Char> sep = detail::string_literal<Char, ',', ' '>{};
+    // With braces, pairs use ", " like JSON. Without braces ('n'), use "; "
+    // so nested maps inside a ", "-joined range stay distinguishable.
+    basic_string_view<Char> sep =
+        no_delimiters_ ? basic_string_view<Char>(
+                             detail::string_literal<Char, ';', ' '>{})
+                       : basic_string_view<Char>(
+                             detail::string_literal<Char, ',', ' '>{});
     for (auto&& value : map) {
       if (i > 0) out = detail::copy<Char>(sep, out);
       ctx.advance_to(out);
