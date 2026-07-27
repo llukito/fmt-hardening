@@ -451,11 +451,13 @@ struct range_formatter<
   //
   //   {:}           default: [e0, e1, …], elements in debug form
   //   {:n}          no brackets; separator stays ", "
+  //   {:nn}         each 'n' strips one nesting level of brackets (same idea
+  //                 as optional's {:nn}); equivalent to {:n:n} for two levels
   //   {:s}          character ranges only: concatenate as "e0e1…"
   //   {:?s}         character ranges only: one debug-escaped string of all
   //                 elements (no brackets / separator)
-  //   {:…:elem}     after optional n, a ':' starts element format specs
-  //                 (e.g. {:n:#x} → 0x1, 0x2, 0x3)
+  //   {:…:elem}     after optional n(s), a ':' starts element format specs
+  //                 (e.g. {:n:#x} → 0x1, 0x2, 0x3; {:n:n} still works)
   //
   // Element debug form is on by default and turned off when element specs or
   // '{:s}' are present.
@@ -470,7 +472,9 @@ struct range_formatter<
 
     const char spec = detail::to_ascii(*it);
 
-    // '{:n}' — suppress surrounding brackets only.
+    // '{:n}' — suppress surrounding brackets only. Further 'n's (e.g. '{:nn}')
+    // are left for the element formatter so nested ranges can strip one level
+    // each, matching optional's stacked '{:nn}'.
     if (spec == 'n') {
       this->set_brackets({}, {});
       ++it;
@@ -502,12 +506,17 @@ struct range_formatter<
     }
     // else: no range-level letter (e.g. '{::d}' starts with ':').
 
-    // Optional nested element specs after ':'.
+    // Optional nested element specs after ':', or another 'n' for a nested
+    // range (forwarded to underlying_.parse without requiring a colon).
     if (it != end && *it != '}') {
-      if (*it != ':') report_error("invalid format specifier");
-      // Explicit element specs: do not force debug on elements.
-      detail::maybe_set_debug_format(underlying_, false);
-      ++it;
+      if (*it == ':') {
+        // Explicit element specs: do not force debug on elements.
+        detail::maybe_set_debug_format(underlying_, false);
+        ++it;
+      } else if (detail::to_ascii(*it) != 'n') {
+        report_error("invalid format specifier");
+      }
+      // else *it == 'n': leave for nested range_formatter.
     }
 
     ctx.advance_to(it);
