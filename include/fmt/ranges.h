@@ -588,6 +588,15 @@ struct formatter<
 };
 
 // A map formatter.
+//
+//   {}     {"k": v, "k2": v2}
+//   {:n}   "k": v; "k2": v2
+//
+// '{:n}' drops the surrounding braces. Key/value pairs are joined with "; "
+// (not ", ") so that when maps are nested inside another range that also uses
+// 'n' — e.g. vector<map> with '{:nn}' — outer ", " still marks map boundaries:
+//   [{"a": 1, "b": 2}, {"c": 3}]  with {:nn}  →  "a": 1; "b": 2, "c": 3
+// With a comma between pairs that would read as one flat entry list.
 template <typename R, typename Char>
 struct formatter<
     R, Char,
@@ -609,6 +618,9 @@ struct formatter<
     auto it = ctx.begin();
     auto end = ctx.end();
     if (it != end) {
+      // One 'n' clears this map's braces (same as ranges). A following 'n'
+      // is left for nested value formatters when present (e.g. map of maps
+      // is not handled here — values use pair formatters).
       if (detail::to_ascii(*it) == 'n') {
         no_delimiters_ = true;
         ++it;
@@ -629,7 +641,13 @@ struct formatter<
     basic_string_view<Char> open = detail::string_literal<Char, '{'>{};
     if (!no_delimiters_) out = detail::copy<Char>(open, out);
     int i = 0;
-    basic_string_view<Char> sep = detail::string_literal<Char, ',', ' '>{};
+    // With braces, pairs use ", " like JSON. Without braces ('n'), use "; "
+    // so nested maps inside a ", "-joined range stay distinguishable.
+    basic_string_view<Char> sep =
+        no_delimiters_ ? basic_string_view<Char>(
+                             detail::string_literal<Char, ';', ' '>{})
+                       : basic_string_view<Char>(
+                             detail::string_literal<Char, ',', ' '>{});
     for (auto&& value : map) {
       if (i > 0) out = detail::copy<Char>(sep, out);
       ctx.advance_to(out);
