@@ -429,6 +429,14 @@ The available presentation types (*chrono_type*) are:
     number of days without padding. Otherwise, the day of the year as a decimal
     number. Jan 1 is 001. If the result is less than three digits, it is
     left-padded with 0 to three digits.
+    <br><br>
+    The duration meaning is intentional, not a calendar field reused by
+    accident: a duration has no year, so day-of-year is undefined, while a
+    total day count pairs with the time-of-day specs (<code>%H</code>,
+    <code>%T</code>, …) that treat a duration as elapsed time since midnight.
+    C++20 <code>[time.format]</code> (LWG 3270) defines this dual behavior;
+    calendar day-of-year keeps the 3-digit padding, duration days do not
+    because the value is unbounded.
   </td>
 </tr>
 <tr>
@@ -592,7 +600,9 @@ The available presentation types (*chrono_type*) are:
 </table>
 
 Specifiers that have a calendaric component such as `'d'` (the day of month)
-are valid only for `std::tm` and time points but not durations.
+are valid only for `std::tm` and time points but not durations. The exception
+is `'j'`: on a duration it is the total number of days (see the table above),
+not day-of-year.
 
 The available padding modifiers (*padding_modifier*) are:
 
