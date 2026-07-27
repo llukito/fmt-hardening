@@ -829,7 +829,11 @@ TEST(chrono_test, weekday) {
   EXPECT_EQ(fmt::format("{}", sat), "Sat");
   EXPECT_EQ(fmt::format("{:%a}", sat), "Sat");
   EXPECT_EQ(fmt::format("{:%A}", sat), "Saturday");
+  EXPECT_EQ(fmt::format("{:%u}", sat), "6");
+  EXPECT_EQ(fmt::format("{:%w}", sat), "6");
   EXPECT_EQ(fmt::format("{:%a}", tm), "Sat");
+  // Width pads the default presentation, not a synthetic full date/time.
+  EXPECT_EQ(fmt::format(runtime("{:>5}"), sat), "  Sat");
 
   if (loc != std::locale::classic()) {
     auto saturdays = std::vector<std::string>{"sáb", "sá.", "sáb."};
@@ -837,6 +841,68 @@ TEST(chrono_test, weekday) {
     EXPECT_THAT(saturdays, Contains(fmt::format(loc, "{:L%a}", sat)));
     EXPECT_THAT(saturdays, Contains(fmt::format(loc, "{:L%a}", tm)));
   }
+}
+
+// Calendar types only accept conversion specs for data they actually hold.
+// Other specs used to fall through to formatter<tm> with zeroed fields
+// (nonsense output, and debug asserts / crashes on e.g. weekday + %d).
+TEST(chrono_test, calendar_invalid_specs) {
+  auto wd = fmt::weekday(6);
+  auto d = fmt::day(15);
+  auto m = fmt::month(7);
+  auto y = fmt::year(2024);
+  auto ymd = fmt::year_month_day(y, m, d);
+
+  // weekday: only %a %A %u %w (+ text). Not year/month/day/time/tz/date.
+  for (const char* spec : {"{:%Y}", "{:%m}", "{:%d}", "{:%e}", "{:%j}", "{:%F}",
+                           "{:%D}", "{:%H}", "{:%T}", "{:%c}", "{:%x}", "{:%z}",
+                           "{:%Z}", "{:%b}", "{:%Q}"}) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), wd), fmt::format_error,
+                     "no date")
+        << "weekday spec=" << spec;
+  }
+
+  // day: only %d %e.
+  for (const char* spec :
+       {"{:%Y}", "{:%m}", "{:%a}", "{:%A}", "{:%H}", "{:%F}", "{:%j}",
+        "{:%w}"}) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), d), fmt::format_error,
+                     "no date")
+        << "day spec=" << spec;
+  }
+
+  // month: only %b %B %h %m.
+  for (const char* spec :
+       {"{:%Y}", "{:%d}", "{:%a}", "{:%H}", "{:%F}", "{:%j}"}) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), m), fmt::format_error,
+                     "no date")
+        << "month spec=" << spec;
+  }
+
+  // year: only %Y %y %C and E-modifiers of those.
+  for (const char* spec :
+       {"{:%m}", "{:%d}", "{:%a}", "{:%j}", "{:%F}", "{:%G}", "{:%g}",
+        "{:%V}"}) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), y), fmt::format_error,
+                     "no date")
+        << "year spec=" << spec;
+  }
+
+  // year_month_day: civil date (+ derived weekday/week/yday). Not time/tz.
+  for (const char* spec :
+       {"{:%H}", "{:%M}", "{:%S}", "{:%T}", "{:%R}", "{:%r}", "{:%p}",
+        "{:%X}", "{:%c}", "{:%z}", "{:%Z}", "{:%Q}", "{:%q}"}) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), ymd), fmt::format_error,
+                     "no date")
+        << "ymd spec=" << spec;
+  }
+
+  // Precision is only for floating-point durations.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2}"), y), fmt::format_error,
+                   "precision not allowed for this argument type");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2%Y}"), y),
+                   fmt::format_error,
+                   "precision not allowed for this argument type");
 }
 
 TEST(chrono_test, cpp20_duration_subsecond_support) {
@@ -1125,19 +1191,39 @@ TEST(chrono_test, year_month_day) {
   EXPECT_EQ(fmt::format("{}", year), "2024");
   EXPECT_EQ(fmt::format("{:%Y}", year), "2024");
   EXPECT_EQ(fmt::format("{:%y}", year), "24");
+  EXPECT_EQ(fmt::format("{:%C}", year), "20");
 
   EXPECT_EQ(fmt::format("{}", month), "Jan");
   EXPECT_EQ(fmt::format("{:%m}", month), "01");
   EXPECT_EQ(fmt::format("{:%b}", month), "Jan");
   EXPECT_EQ(fmt::format("{:%B}", month), "January");
+  EXPECT_EQ(fmt::format("{:%h}", month), "Jan");
 
   EXPECT_EQ(fmt::format("{}", day), "01");
   EXPECT_EQ(fmt::format("{:%d}", day), "01");
+  EXPECT_EQ(fmt::format("{:%e}", day), " 1");
 
   EXPECT_EQ(fmt::format("{}", ymd), "2024-01-01");
+  EXPECT_EQ(fmt::format("{:%F}", ymd), "2024-01-01");
   EXPECT_EQ(fmt::format("{:%Y-%m-%d}", ymd), "2024-01-01");
   EXPECT_EQ(fmt::format("{:%Y-%b-%d}", ymd), "2024-Jan-01");
   EXPECT_EQ(fmt::format("{:%Y-%B-%d}", ymd), "2024-January-01");
+  // Derived from the civil date (not left zeroed on a partial tm).
+  EXPECT_EQ(fmt::format("{:%a}", ymd), "Mon");  // 2024-01-01 was a Monday
+  EXPECT_EQ(fmt::format("{:%A}", ymd), "Monday");
+  EXPECT_EQ(fmt::format("{:%u}", ymd), "1");
+  EXPECT_EQ(fmt::format("{:%w}", ymd), "1");
+  EXPECT_EQ(fmt::format("{:%j}", ymd), "001");
+
+  // 2024-07-15 is also a Monday; day-of-year 197 in a leap year.
+  auto mid = fmt::year_month_day(fmt::year(2024), fmt::month(7), fmt::day(15));
+  EXPECT_EQ(fmt::format("{:%a}", mid), "Mon");
+  EXPECT_EQ(fmt::format("{:%j}", mid), "197");
+  EXPECT_EQ(fmt::format("{:%F}", mid), "2024-07-15");
+
+  // Width on default presentation only.
+  EXPECT_EQ(fmt::format(runtime("{:12}"), ymd), "2024-01-01  ");
+  EXPECT_EQ(fmt::format(runtime("{:>5}"), day), "   01");
 
   if (loc != std::locale::classic()) {
     auto months = std::vector<std::string>{"ene.", "ene"};

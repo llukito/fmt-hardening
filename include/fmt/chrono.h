@@ -1526,6 +1526,161 @@ struct chrono_format_checker : null_chrono_spec_handler<chrono_format_checker> {
   FMT_CONSTEXPR void on_duration_unit() {}
 };
 
+// Calendar-type checkers: only conversion specs for which the type actually
+// carries information are allowed (C++ [time.format] / same rules as
+// std::formatter for these types). Everything else → "no date".
+// Text (%%, %n, %t) is always allowed via on_text.
+
+struct weekday_format_checker
+    : null_chrono_spec_handler<weekday_format_checker> {
+  FMT_NORETURN inline void unsupported() { FMT_THROW(format_error("no date")); }
+  template <typename Char>
+  FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  FMT_CONSTEXPR void on_abbr_weekday() {}
+  FMT_CONSTEXPR void on_full_weekday() {}
+  FMT_CONSTEXPR void on_dec0_weekday(numeric_system) {}
+  FMT_CONSTEXPR void on_dec1_weekday(numeric_system) {}
+};
+
+struct day_format_checker : null_chrono_spec_handler<day_format_checker> {
+  FMT_NORETURN inline void unsupported() { FMT_THROW(format_error("no date")); }
+  template <typename Char>
+  FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  FMT_CONSTEXPR void on_day_of_month(numeric_system, pad_type) {}
+};
+
+struct month_format_checker : null_chrono_spec_handler<month_format_checker> {
+  FMT_NORETURN inline void unsupported() { FMT_THROW(format_error("no date")); }
+  template <typename Char>
+  FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  FMT_CONSTEXPR void on_abbr_month() {}
+  FMT_CONSTEXPR void on_full_month() {}
+  FMT_CONSTEXPR void on_dec_month(numeric_system, pad_type) {}
+};
+
+struct year_format_checker : null_chrono_spec_handler<year_format_checker> {
+  FMT_NORETURN inline void unsupported() { FMT_THROW(format_error("no date")); }
+  template <typename Char>
+  FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  FMT_CONSTEXPR void on_year(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_short_year(numeric_system) {}
+  FMT_CONSTEXPR void on_offset_year() {}
+  FMT_CONSTEXPR void on_century(numeric_system) {}
+};
+
+// year_month_day is a full civil date: year/month/day and anything derivable
+// from them (weekday, day-of-year, week numbers, %D/%F/%x). Not time or tz.
+struct ymd_format_checker : null_chrono_spec_handler<ymd_format_checker> {
+  FMT_NORETURN inline void unsupported() { FMT_THROW(format_error("no date")); }
+  template <typename Char>
+  FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  FMT_CONSTEXPR void on_year(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_short_year(numeric_system) {}
+  FMT_CONSTEXPR void on_offset_year() {}
+  FMT_CONSTEXPR void on_century(numeric_system) {}
+  FMT_CONSTEXPR void on_iso_week_based_year() {}
+  FMT_CONSTEXPR void on_iso_week_based_short_year() {}
+  FMT_CONSTEXPR void on_abbr_weekday() {}
+  FMT_CONSTEXPR void on_full_weekday() {}
+  FMT_CONSTEXPR void on_dec0_weekday(numeric_system) {}
+  FMT_CONSTEXPR void on_dec1_weekday(numeric_system) {}
+  FMT_CONSTEXPR void on_abbr_month() {}
+  FMT_CONSTEXPR void on_full_month() {}
+  FMT_CONSTEXPR void on_dec_month(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_dec0_week_of_year(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_dec1_week_of_year(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_iso_week_of_year(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_day_of_year(pad_type) {}
+  FMT_CONSTEXPR void on_day_of_month(numeric_system, pad_type) {}
+  FMT_CONSTEXPR void on_loc_date(numeric_system) {}
+  FMT_CONSTEXPR void on_us_date() {}
+  FMT_CONSTEXPR void on_iso_date() {}
+};
+
+// Parse chrono-format-spec for calendar types (no precision — only durations
+// with floating rep may use it).
+//
+//   [[fill]align][width]["L"][chrono_specs]
+template <typename Char, typename Checker>
+FMT_CONSTEXPR auto parse_calendar_format(
+    parse_context<Char>& ctx, format_specs& specs, arg_ref<Char>& width_ref,
+    basic_string_view<Char>& fmt, Checker checker) -> const Char* {
+  auto it = ctx.begin(), end = ctx.end();
+  if (it == end || *it == '}') return it;
+
+  it = parse_align(it, end, specs);
+  if (it == end) return it;
+
+  Char c = *it;
+  if ((c >= '0' && c <= '9') || c == '{') {
+    it = parse_width(it, end, specs, width_ref, ctx);
+    if (it == end) return it;
+  }
+
+  if (it != end && *it == '.')
+    FMT_THROW(format_error("precision not allowed for this argument type"));
+
+  if (it != end && *it == 'L') {
+    specs.set_localized();
+    ++it;
+  }
+
+  end = parse_chrono_format(it, end, checker);
+  // Keep fmt empty when there are no conversion specs so format() uses the
+  // type's default presentation (not tm's "%F %T").
+  if (end != it) fmt = {it, to_unsigned(end - it)};
+  return end;
+}
+
+// Days since civil 1970-01-01 (Howard Hinnant). Used to derive weekday and
+// day-of-year for year_month_day formatting.
+inline auto days_from_civil(int y, unsigned m, unsigned d) -> long long {
+  y -= m <= 2 ? 1 : 0;
+  const auto era = (y >= 0 ? y : y - 399) / 400;
+  const auto yoe = static_cast<unsigned>(y - era * 400);
+  const auto doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+  const auto doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097LL + static_cast<long long>(doe) - 719468;
+}
+
+inline void set_tm_ymd(std::tm& time, int year, unsigned month, unsigned day) {
+  time.tm_year = year - 1900;
+  time.tm_mon = static_cast<int>(month) - 1;
+  time.tm_mday = static_cast<int>(day);
+  // Derive weekday / yday when the civil triple is in range so %a/%j/%U/…
+  // work. Out-of-range components (e.g. month 0) leave derived fields at 0.
+  if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+    const auto days = days_from_civil(year, month, day);
+    // 1970-01-01 was Thursday (tm_wday 4).
+    time.tm_wday = static_cast<int>((days % 7 + 11) % 7);  // +4, keep ≥0
+    time.tm_yday = static_cast<int>(days - days_from_civil(year, 1, 1));
+  }
+}
+
+// Applies fill, align, and width to a pre-formatted chrono string.
+//
+// Model: format the duration (or other chrono value) into plain content first,
+// then pad the whole result as a string. Precision, localization, and chrono
+// conversion specs affect only the content stage — never the outer padding.
+//
+// When align is omitted (align::none), padding is left-aligned (fmt's chrono
+// default; matches existing duration/tm tests). Explicit < > ^ and custom fills
+// behave as for ordinary strings.
+template <typename Char, typename OutputIt>
+auto write_chrono_padded(OutputIt out, basic_string_view<Char> content,
+                         const format_specs& specs) -> OutputIt {
+  if (specs.width <= 0) return copy<Char>(content, out);
+
+  // Only width / fill / align participate in outer padding. Stripping other
+  // fields (precision, localized, type, …) keeps padding independent of how
+  // the content was produced.
+  format_specs pad;
+  pad.width = specs.width;
+  pad.set_align(specs.align());
+  pad.copy_fill_from(specs);
+  return write(out, content, pad);
+}
+
 template <typename T,
           FMT_ENABLE_IF(std::is_integral<T>::value&& has_isfinite<T>::value)>
 inline auto isfinite(T) -> bool {
@@ -1641,6 +1796,28 @@ class get_locale {
     return has_locale_ ? locale_ : get_classic_locale();
   }
 };
+
+// Stage-1 content + stage-2 outer pad for calendar types built on std::tm.
+// Empty fmt invokes default_write (type-specific default presentation).
+template <typename Char, typename FormatContext, typename DefaultFn>
+auto write_calendar(const std::tm& time, FormatContext& ctx, format_specs specs,
+                    const arg_ref<Char>& width_ref,
+                    basic_string_view<Char> fmt, DefaultFn default_write)
+    -> decltype(ctx.out()) {
+  handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref, ctx);
+
+  auto buf = basic_memory_buffer<Char>();
+  auto out = basic_appender<Char>(buf);
+  auto loc_ref = specs.localized() ? ctx.locale() : locale_ref();
+  get_locale loc(static_cast<bool>(loc_ref), loc_ref);
+  auto w = tm_writer<basic_appender<Char>, Char>(loc, out, time);
+  if (fmt.size() == 0)
+    default_write(w);
+  else
+    parse_chrono_format(fmt.begin(), fmt.end(), w);
+  return write_chrono_padded(
+      ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
+}
 
 template <typename Char, typename Rep, typename Period>
 struct duration_formatter {
@@ -1959,164 +2136,126 @@ class year_month_day {
 };
 #endif  // __cpp_lib_chrono >= 201907
 
-template <typename Char>
-struct formatter<weekday, Char> : private formatter<std::tm, Char> {
+// Calendar types only answer conversion specs for data they hold (or can
+// derive). Invalid specs throw format_error("no date") at parse time via the
+// matching *_format_checker. Defaults: weekday→%a, day→%d, month→%b, year→%Y,
+// year_month_day→%F. Width/align/fill pad the whole result like duration/tm.
+
+template <typename Char> struct formatter<weekday, Char> {
  private:
-  bool use_tm_formatter_ = false;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  basic_string_view<Char> fmt_;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    auto it = ctx.begin(), end = ctx.end();
-    if (it != end && *it == 'L') {
-      ++it;
-      this->set_localized();
-    }
-    use_tm_formatter_ = it != end && *it != '}';
-    return use_tm_formatter_ ? formatter<std::tm, Char>::parse(ctx) : it;
+    return detail::parse_calendar_format(ctx, specs_, width_ref_, fmt_,
+                                         detail::weekday_format_checker());
   }
 
   template <typename FormatContext>
   auto format(weekday wd, FormatContext& ctx) const -> decltype(ctx.out()) {
     auto time = std::tm();
     time.tm_wday = static_cast<int>(wd.c_encoding());
-    if (use_tm_formatter_) return formatter<std::tm, Char>::format(time, ctx);
-    detail::get_locale loc(this->localized(), ctx.locale());
-    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);
-    w.on_abbr_weekday();
-    return w.out();
+    return detail::write_calendar(
+        time, ctx, specs_, width_ref_, fmt_,
+        [](auto& w) { w.on_abbr_weekday(); });
   }
 };
 
-template <typename Char>
-struct formatter<day, Char> : private formatter<std::tm, Char> {
+template <typename Char> struct formatter<day, Char> {
  private:
-  bool use_tm_formatter_ = false;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  basic_string_view<Char> fmt_;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    auto it = ctx.begin(), end = ctx.end();
-    use_tm_formatter_ = it != end && *it != '}';
-    return use_tm_formatter_ ? formatter<std::tm, Char>::parse(ctx) : it;
+    return detail::parse_calendar_format(ctx, specs_, width_ref_, fmt_,
+                                         detail::day_format_checker());
   }
 
   template <typename FormatContext>
   auto format(day d, FormatContext& ctx) const -> decltype(ctx.out()) {
     auto time = std::tm();
     time.tm_mday = static_cast<int>(static_cast<unsigned>(d));
-    if (use_tm_formatter_) return formatter<std::tm, Char>::format(time, ctx);
-    detail::get_locale loc(false, ctx.locale());
-    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);
-    w.on_day_of_month(detail::numeric_system::standard, detail::pad_type::zero);
-    return w.out();
+    return detail::write_calendar(
+        time, ctx, specs_, width_ref_, fmt_, [](auto& w) {
+          w.on_day_of_month(detail::numeric_system::standard,
+                            detail::pad_type::zero);
+        });
   }
 };
 
-template <typename Char>
-struct formatter<month, Char> : private formatter<std::tm, Char> {
+template <typename Char> struct formatter<month, Char> {
  private:
-  bool use_tm_formatter_ = false;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  basic_string_view<Char> fmt_;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    auto it = ctx.begin(), end = ctx.end();
-    if (it != end && *it == 'L') {
-      ++it;
-      this->set_localized();
-    }
-    use_tm_formatter_ = it != end && *it != '}';
-    return use_tm_formatter_ ? formatter<std::tm, Char>::parse(ctx) : it;
+    return detail::parse_calendar_format(ctx, specs_, width_ref_, fmt_,
+                                         detail::month_format_checker());
   }
 
   template <typename FormatContext>
   auto format(month m, FormatContext& ctx) const -> decltype(ctx.out()) {
     auto time = std::tm();
     time.tm_mon = static_cast<int>(static_cast<unsigned>(m)) - 1;
-    if (use_tm_formatter_) return formatter<std::tm, Char>::format(time, ctx);
-    detail::get_locale loc(this->localized(), ctx.locale());
-    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);
-    w.on_abbr_month();
-    return w.out();
+    return detail::write_calendar(
+        time, ctx, specs_, width_ref_, fmt_,
+        [](auto& w) { w.on_abbr_month(); });
   }
 };
 
-template <typename Char>
-struct formatter<year, Char> : private formatter<std::tm, Char> {
+template <typename Char> struct formatter<year, Char> {
  private:
-  bool use_tm_formatter_ = false;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  basic_string_view<Char> fmt_;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    auto it = ctx.begin(), end = ctx.end();
-    use_tm_formatter_ = it != end && *it != '}';
-    return use_tm_formatter_ ? formatter<std::tm, Char>::parse(ctx) : it;
+    return detail::parse_calendar_format(ctx, specs_, width_ref_, fmt_,
+                                         detail::year_format_checker());
   }
 
   template <typename FormatContext>
   auto format(year y, FormatContext& ctx) const -> decltype(ctx.out()) {
     auto time = std::tm();
     time.tm_year = static_cast<int>(y) - 1900;
-    if (use_tm_formatter_) return formatter<std::tm, Char>::format(time, ctx);
-    detail::get_locale loc(false, ctx.locale());
-    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);
-    w.on_year(detail::numeric_system::standard, detail::pad_type::zero);
-    return w.out();
+    return detail::write_calendar(
+        time, ctx, specs_, width_ref_, fmt_, [](auto& w) {
+          w.on_year(detail::numeric_system::standard, detail::pad_type::zero);
+        });
   }
 };
 
-template <typename Char>
-struct formatter<year_month_day, Char> : private formatter<std::tm, Char> {
+template <typename Char> struct formatter<year_month_day, Char> {
  private:
-  bool use_tm_formatter_ = false;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
+  basic_string_view<Char> fmt_;
 
  public:
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
-    auto it = ctx.begin(), end = ctx.end();
-    use_tm_formatter_ = it != end && *it != '}';
-    return use_tm_formatter_ ? formatter<std::tm, Char>::parse(ctx) : it;
+    return detail::parse_calendar_format(ctx, specs_, width_ref_, fmt_,
+                                         detail::ymd_format_checker());
   }
 
   template <typename FormatContext>
   auto format(year_month_day val, FormatContext& ctx) const
       -> decltype(ctx.out()) {
     auto time = std::tm();
-    time.tm_year = static_cast<int>(val.year()) - 1900;
-    time.tm_mon = static_cast<int>(static_cast<unsigned>(val.month())) - 1;
-    time.tm_mday = static_cast<int>(static_cast<unsigned>(val.day()));
-    if (use_tm_formatter_) return formatter<std::tm, Char>::format(time, ctx);
-    detail::get_locale loc(true, ctx.locale());
-    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);
-    w.on_iso_date();
-    return w.out();
+    detail::set_tm_ymd(time, static_cast<int>(val.year()),
+                       static_cast<unsigned>(val.month()),
+                       static_cast<unsigned>(val.day()));
+    return detail::write_calendar(
+        time, ctx, specs_, width_ref_, fmt_,
+        [](auto& w) { w.on_iso_date(); });
   }
 };
-
-namespace detail {
-
-// Applies fill, align, and width to a pre-formatted chrono string.
-//
-// Model: format the duration (or other chrono value) into plain content first,
-// then pad the whole result as a string. Precision, localization, and chrono
-// conversion specs affect only the content stage — never the outer padding.
-//
-// When align is omitted (align::none), padding is left-aligned (fmt's chrono
-// default; matches existing duration/tm tests). Explicit < > ^ and custom fills
-// behave as for ordinary strings.
-template <typename Char, typename OutputIt>
-auto write_chrono_padded(OutputIt out, basic_string_view<Char> content,
-                         const format_specs& specs) -> OutputIt {
-  if (specs.width <= 0) return copy<Char>(content, out);
-
-  // Only width / fill / align participate in outer padding. Stripping other
-  // fields (precision, localized, type, …) keeps padding independent of how
-  // the content was produced.
-  format_specs pad;
-  pad.width = specs.width;
-  pad.set_align(specs.align());
-  pad.copy_fill_from(specs);
-  return write(out, content, pad);
-}
-
-}  // namespace detail
 
 template <typename Rep, typename Period, typename Char>
 struct formatter<std::chrono::duration<Rep, Period>, Char> {
