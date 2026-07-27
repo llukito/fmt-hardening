@@ -801,10 +801,11 @@ template <typename Derived> struct null_chrono_spec_handler {
   FMT_CONSTEXPR void on_day_of_month(numeric_system, pad_type) {
     unsupported();
   }
-  FMT_CONSTEXPR void on_24_hour(numeric_system) { unsupported(); }
-  FMT_CONSTEXPR void on_12_hour(numeric_system) { unsupported(); }
-  FMT_CONSTEXPR void on_minute(numeric_system) { unsupported(); }
-  FMT_CONSTEXPR void on_second(numeric_system) { unsupported(); }
+  // Match parse_chrono_format which always passes pad_type.
+  FMT_CONSTEXPR void on_24_hour(numeric_system, pad_type) { unsupported(); }
+  FMT_CONSTEXPR void on_12_hour(numeric_system, pad_type) { unsupported(); }
+  FMT_CONSTEXPR void on_minute(numeric_system, pad_type) { unsupported(); }
+  FMT_CONSTEXPR void on_second(numeric_system, pad_type) { unsupported(); }
   FMT_CONSTEXPR void on_datetime(numeric_system) { unsupported(); }
   FMT_CONSTEXPR void on_loc_date(numeric_system) { unsupported(); }
   FMT_CONSTEXPR void on_loc_time(numeric_system) { unsupported(); }
@@ -1493,6 +1494,13 @@ class tm_writer {
   void on_duration_unit() {}
 };
 
+// Parse-time checker for duration chrono-specs. Only time-of-day, duration
+// value/unit, and text (incl. %%, %n, %t) are allowed. Calendar/date specs
+// fall through to unsupported() → "no date".
+//
+// Allowed: %H %I %M %S %R %T %r %p %Q %q %j (total days) and O-modifiers for
+// the time fields. Rejected: %Y %m %d %a %F %z %Z %c %x %X … (anything that
+// needs a calendar date or timezone).
 struct chrono_format_checker : null_chrono_spec_handler<chrono_format_checker> {
   bool has_precision_integral = false;
 
@@ -1500,6 +1508,7 @@ struct chrono_format_checker : null_chrono_spec_handler<chrono_format_checker> {
 
   template <typename Char>
   FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
+  // %j: total days in the duration (not calendar day-of-year).
   FMT_CONSTEXPR void on_day_of_year(pad_type) {}
   FMT_CONSTEXPR void on_24_hour(numeric_system, pad_type) {}
   FMT_CONSTEXPR void on_12_hour(numeric_system, pad_type) {}
@@ -1736,32 +1745,38 @@ struct duration_formatter {
     copy<Char>(begin, end, out);
   }
 
-  // These are not implemented because durations don't have date information.
-  void on_abbr_weekday() {}
-  void on_full_weekday() {}
-  void on_dec0_weekday(numeric_system) {}
-  void on_dec1_weekday(numeric_system) {}
-  void on_abbr_month() {}
-  void on_full_month() {}
-  void on_datetime(numeric_system) {}
-  void on_loc_date(numeric_system) {}
-  void on_loc_time(numeric_system) {}
-  void on_us_date() {}
-  void on_iso_date() {}
-  void on_utc_offset(numeric_system) {}
-  void on_tz_name() {}
-  void on_year(numeric_system, pad_type) {}
-  void on_short_year(numeric_system) {}
-  void on_offset_year() {}
-  void on_century(numeric_system) {}
-  void on_iso_week_based_year() {}
-  void on_iso_week_based_short_year() {}
-  void on_dec_month(numeric_system, pad_type) {}
-  void on_dec0_week_of_year(numeric_system, pad_type) {}
-  void on_dec1_week_of_year(numeric_system, pad_type) {}
-  void on_iso_week_of_year(numeric_system, pad_type) {}
-  void on_day_of_month(numeric_system, pad_type) {}
+  // Calendar / date / timezone specs do not apply to durations. The parse-time
+  // chrono_format_checker rejects them with "no date"; throw the same here so
+  // format-time handling cannot silently no-op if a spec ever reaches us.
+  FMT_NORETURN void no_date() { FMT_THROW(format_error("no date")); }
 
+  void on_abbr_weekday() { no_date(); }
+  void on_full_weekday() { no_date(); }
+  void on_dec0_weekday(numeric_system) { no_date(); }
+  void on_dec1_weekday(numeric_system) { no_date(); }
+  void on_abbr_month() { no_date(); }
+  void on_full_month() { no_date(); }
+  void on_datetime(numeric_system) { no_date(); }
+  void on_loc_date(numeric_system) { no_date(); }
+  // %x / %X / %c need a calendar date (locale representations); reject.
+  void on_loc_time(numeric_system) { no_date(); }
+  void on_us_date() { no_date(); }
+  void on_iso_date() { no_date(); }
+  void on_utc_offset(numeric_system) { no_date(); }
+  void on_tz_name() { no_date(); }
+  void on_year(numeric_system, pad_type) { no_date(); }
+  void on_short_year(numeric_system) { no_date(); }
+  void on_offset_year() { no_date(); }
+  void on_century(numeric_system) { no_date(); }
+  void on_iso_week_based_year() { no_date(); }
+  void on_iso_week_based_short_year() { no_date(); }
+  void on_dec_month(numeric_system, pad_type) { no_date(); }
+  void on_dec0_week_of_year(numeric_system, pad_type) { no_date(); }
+  void on_dec1_week_of_year(numeric_system, pad_type) { no_date(); }
+  void on_iso_week_of_year(numeric_system, pad_type) { no_date(); }
+  void on_day_of_month(numeric_system, pad_type) { no_date(); }
+
+  // %j: total days in the duration (not calendar day-of-year).
   void on_day_of_year(pad_type) {
     if (handle_nan_inf()) return;
     write(days(), 0);

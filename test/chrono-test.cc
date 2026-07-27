@@ -598,38 +598,29 @@ TEST(chrono_test, fractional_seconds) {
 
 TEST(chrono_test, invalid_specs) {
   auto sec = std::chrono::seconds(0);
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%a}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%A}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%c}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%x}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Ex}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%X}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%EX}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%D}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%F}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Ec}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%w}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%u}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%b}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%B}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%z}"), sec), fmt::format_error,
-                   "no date");
-  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Z}"), sec), fmt::format_error,
-                   "no date");
+  // Calendar / date / timezone conversion specs: all reject with "no date".
+  // Keep this in sync with date-only handlers in parse_chrono_format.
+  const char* date_specs[] = {
+      "{:%a}",  "{:%A}",  "{:%b}",  "{:%B}",  "{:%c}",  "{:%C}",  "{:%d}",
+      "{:%D}",  "{:%e}",  "{:%Ec}", "{:%EC}", "{:%Ex}", "{:%EX}", "{:%Ey}",
+      "{:%EY}", "{:%Ez}", "{:%F}",  "{:%g}",  "{:%G}",  "{:%h}",  "{:%m}",
+      "{:%Od}", "{:%Oe}", "{:%Om}", "{:%Ou}", "{:%OU}", "{:%OV}", "{:%Ow}",
+      "{:%OW}", "{:%Oy}", "{:%Oz}", "{:%u}",  "{:%U}",  "{:%V}",  "{:%w}",
+      "{:%W}",  "{:%x}",  "{:%X}",  "{:%y}",  "{:%Y}",  "{:%z}",  "{:%Z}",
+  };
+  for (const char* spec : date_specs) {
+    EXPECT_THROW_MSG((void)fmt::format(runtime(spec), sec), fmt::format_error,
+                     "no date")
+        << "spec=" << spec;
+  }
+  // Mixing a valid time spec with a date spec still rejects the whole string.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%H%Y}"), sec),
+                   fmt::format_error, "no date");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Y%H}"), sec),
+                   fmt::format_error, "no date");
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Q%m}"), sec),
+                   fmt::format_error, "no date");
+
   EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Eq}"), sec), fmt::format_error,
                    "invalid format");
   EXPECT_THROW_MSG((void)fmt::format(runtime("{:%Oq}"), sec), fmt::format_error,
@@ -638,6 +629,36 @@ TEST(chrono_test, invalid_specs) {
                    "invalid format");
   EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2f}"), sec), fmt::format_error,
                    "invalid format");
+  // Precision is only meaningful for floating duration value / fractional %S.
+  EXPECT_THROW_MSG((void)fmt::format(runtime("{:.2%Q}"), sec),
+                   fmt::format_error,
+                   "precision not allowed for this argument type");
+}
+
+// Duration-appropriate chrono specs still work (time-of-day + %Q/%q/%j).
+TEST(chrono_test, duration_valid_chrono_specs) {
+  using std::chrono::seconds;
+  auto sec = seconds(3723);  // 1h 2m 3s
+  EXPECT_EQ(fmt::format("{:%H}", sec), "01");
+  EXPECT_EQ(fmt::format("{:%I}", sec), "01");
+  EXPECT_EQ(fmt::format("{:%M}", sec), "02");
+  EXPECT_EQ(fmt::format("{:%S}", sec), "03");
+  EXPECT_EQ(fmt::format("{:%T}", sec), "01:02:03");
+  EXPECT_EQ(fmt::format("{:%R}", sec), "01:02");
+  EXPECT_EQ(fmt::format("{:%r}", sec), "01:02:03 AM");
+  EXPECT_EQ(fmt::format("{:%p}", sec), "AM");
+  EXPECT_EQ(fmt::format("{:%Q}", sec), "3723");
+  EXPECT_EQ(fmt::format("{:%q}", sec), "s");
+  EXPECT_EQ(fmt::format("{:%OH}", sec), "01");
+  EXPECT_EQ(fmt::format("{:%OM}", sec), "02");
+  EXPECT_EQ(fmt::format("{:%OS}", sec), "03");
+  // %j: total days (not calendar day-of-year).
+  EXPECT_EQ(fmt::format("{:%j}", seconds(0)), "0");
+  EXPECT_EQ(fmt::format("{:%j}", days(3)), "3");
+  // Literals.
+  EXPECT_EQ(fmt::format("{:%%}", sec), "%");
+  EXPECT_EQ(fmt::format("{:%n}", sec), "\n");
+  EXPECT_EQ(fmt::format("{:%t}", sec), "\t");
 }
 
 auto format_tm(const std::tm& time, fmt::string_view spec,
