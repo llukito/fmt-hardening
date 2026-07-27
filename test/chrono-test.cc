@@ -652,7 +652,8 @@ TEST(chrono_test, duration_valid_chrono_specs) {
   EXPECT_EQ(fmt::format("{:%OH}", sec), "01");
   EXPECT_EQ(fmt::format("{:%OM}", sec), "02");
   EXPECT_EQ(fmt::format("{:%OS}", sec), "03");
-  // %j: total days (not calendar day-of-year).
+  // %j on duration: unpadded total days ([time.format] / LWG 3270), not
+  // calendar day-of-year (which would be 001–366 and needs an epoch).
   EXPECT_EQ(fmt::format("{:%j}", seconds(0)), "0");
   EXPECT_EQ(fmt::format("{:%j}", days(3)), "3");
   // Literals.

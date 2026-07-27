@@ -1495,12 +1495,13 @@ class tm_writer {
 };
 
 // Parse-time checker for duration chrono-specs. Only time-of-day, duration
-// value/unit, and text (incl. %%, %n, %t) are allowed. Calendar/date specs
-// fall through to unsupported() → "no date".
+// value/unit, total-day count (%j), and text (incl. %%, %n, %t) are allowed.
+// Calendar/date/timezone specs fall through to unsupported() → "no date".
 //
-// Allowed: %H %I %M %S %R %T %r %p %Q %q %j (total days) and O-modifiers for
-// the time fields. Rejected: %Y %m %d %a %F %z %Z %c %x %X … (anything that
-// needs a calendar date or timezone).
+// Allowed: %H %I %M %S %R %T %r %p %Q %q %j and O-modifiers for the time
+// fields. Rejected: %Y %m %d %a %F %z %Z %c %x %X … (anything that needs a
+// calendar date or timezone). See duration_formatter::on_day_of_year for why
+// %j is allowed here while other date-like specs are not.
 struct chrono_format_checker : null_chrono_spec_handler<chrono_format_checker> {
   bool has_precision_integral = false;
 
@@ -1508,7 +1509,7 @@ struct chrono_format_checker : null_chrono_spec_handler<chrono_format_checker> {
 
   template <typename Char>
   FMT_CONSTEXPR void on_text(const Char*, const Char*) {}
-  // %j: total days in the duration (not calendar day-of-year).
+  // Allowed: see duration_formatter::on_day_of_year.
   FMT_CONSTEXPR void on_day_of_year(pad_type) {}
   FMT_CONSTEXPR void on_24_hour(numeric_system, pad_type) {}
   FMT_CONSTEXPR void on_12_hour(numeric_system, pad_type) {}
@@ -1776,7 +1777,25 @@ struct duration_formatter {
   void on_iso_week_of_year(numeric_system, pad_type) { no_date(); }
   void on_day_of_month(numeric_system, pad_type) { no_date(); }
 
-  // %j: total days in the duration (not calendar day-of-year).
+  // %j on a duration is the integral day count of the duration (unpadded),
+  // not calendar day-of-year.
+  //
+  // Why this is correct (not an accidental reuse of the strftime letter):
+  // - A duration has no calendar epoch, so "day of year" (1–366 in a year)
+  //   is undefined. Other calendar specs (%Y, %m, %d, %a, …) therefore
+  //   reject with "no date".
+  // - C++20 [time.format] (LWG 3270) deliberately dual-defines %j: for
+  //   duration it is "the decimal number of days without padding"; for
+  //   time_point/tm it remains day-of-year with the usual 3-digit padding.
+  //   That matches the existing duration rule that time-of-day flags
+  //   (%H/%M/%S/…) treat the duration as elapsed time since midnight of
+  //   its day component—so %j + %T can express ddd:hh:mm:ss without a
+  //   separate count-of-days conversion.
+  // - Padding differs on purpose: calendar %j is 001–366; duration day
+  //   counts are unbounded (0, 12, 12345, …), so the standard requires no
+  //   width padding here (write width 0 below).
+  //
+  // Added in fmt for std parity (issue #3643 / PR #3732).
   void on_day_of_year(pad_type) {
     if (handle_nan_inf()) return;
     write(days(), 0);
