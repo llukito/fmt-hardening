@@ -36,6 +36,8 @@
 #    include <windows.h>
 
 #    include <climits>  // CHAR_BIT
+#    include <limits>   // numeric_limits
+#    include <string>
 #  endif
 #endif
 
@@ -72,37 +74,120 @@ inline unsigned convert_rwcount(size_t count) {
   return count <= UINT_MAX ? static_cast<unsigned>(count) : UINT_MAX;
 }
 
+// Fetches a Win32 system error description via FormatMessageW.
+// Hardened for: failed/partial FormatMessage results, missing buffers,
+// over-reported lengths, trailing CR/LF, and non-English (UTF-16) text.
 class system_message {
   system_message(const system_message&) = delete;
   void operator=(const system_message&) = delete;
 
-  unsigned long result_;
-  wchar_t* message_;
+  unsigned long length_ = 0;
+  wchar_t* message_ = nullptr;
 
   static bool is_whitespace(wchar_t c) noexcept {
-    return c == L' ' || c == L'\n' || c == L'\r' || c == L'\t' || c == L'\0';
+    return c == L' ' || c == L'\n' || c == L'\r' || c == L'\t';
+  }
+
+  // Map HRESULT-style codes (e.g. 0x80070005) to Win32 codes when possible so
+  // FormatMessage can resolve them; leave pure Win32 codes unchanged.
+  static unsigned long normalize_error_code(int error_code) noexcept {
+    auto code = static_cast<unsigned long>(error_code);
+    // HRESULT with FACILITY_WIN32: severity | facility 7 | win32 code.
+    constexpr unsigned long facility_win32 = 7;
+    constexpr unsigned long facility_shift = 16;
+    constexpr unsigned long facility_mask = 0x7FFul << facility_shift;
+    if ((code & 0x80000000ul) != 0 &&
+        ((code & facility_mask) >> facility_shift) == facility_win32) {
+      return code & 0xFFFFul;
+    }
+    return code;
   }
 
  public:
-  explicit system_message(unsigned long error_code)
-      : result_(0), message_(nullptr) {
-    result_ = FormatMessageW(
+  explicit system_message(int error_code) {
+    unsigned long code = normalize_error_code(error_code);
+    wchar_t* buffer = nullptr;
+    // dwLanguageId 0: search neutral → thread → user → system → US English.
+    // More reliable across locales than LANG_NEUTRAL alone.
+    auto chars = FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
             FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr, error_code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        reinterpret_cast<wchar_t*>(&message_), 0, nullptr);
-    if (result_ != 0) {
-      while (result_ != 0 && is_whitespace(message_[result_ - 1])) {
-        --result_;
+        nullptr, code, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+
+    if (chars == 0 || buffer == nullptr) {
+      // On failure some Windows versions may still touch the out pointer;
+      // only free if non-null.
+      if (buffer != nullptr) LocalFree(buffer);
+      return;
+    }
+
+    message_ = buffer;
+    length_ = chars;
+
+    // Clamp to the first embedded NUL if FormatMessage over-reports length
+    // (defensive; observed with some codes / locales).
+    for (unsigned long i = 0; i < length_; ++i) {
+      if (message_[i] == L'\0') {
+        length_ = i;
+        break;
       }
     }
+
+    // FormatMessage usually appends "\r\n"; strip all trailing whitespace.
+    while (length_ != 0 && is_whitespace(message_[length_ - 1])) --length_;
   }
-  ~system_message() { LocalFree(message_); }
-  explicit operator bool() const noexcept { return result_ != 0; }
+
+  ~system_message() {
+    if (message_ != nullptr) LocalFree(message_);
+  }
+
+  explicit operator bool() const noexcept {
+    return message_ != nullptr && length_ != 0;
+  }
+
   operator fmt::basic_string_view<wchar_t>() const noexcept {
-    return fmt::basic_string_view<wchar_t>(message_, result_);
+    return fmt::basic_string_view<wchar_t>(message_,
+                                           static_cast<size_t>(length_));
   }
 };
+
+// Convert UTF-16 system text to UTF-8 via WideCharToMultiByte (not a hand-rolled
+// UTF-16 decoder). Uses the system converter so non-English messages are
+// handled correctly; length is taken only from the API return value so a
+// wrong input length cannot append garbage.
+inline auto system_message_to_utf8(fmt::basic_string_view<wchar_t> w)
+    -> std::string {
+  if (w.size() == 0 || w.data() == nullptr) return {};
+  if (w.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+    return {};
+
+  int wlen = static_cast<int>(w.size());
+  // Measure. Prefer strict conversion; if the text has invalid surrogates
+  // (rare in system messages, possible with a bad length), retry without
+  // WC_ERR_INVALID_CHARS so we still get a usable string.
+#ifndef WC_ERR_INVALID_CHARS
+#  define FMT_WC_ERR_INVALID_CHARS 0x0080
+#else
+#  define FMT_WC_ERR_INVALID_CHARS WC_ERR_INVALID_CHARS
+#endif
+  DWORD flags = FMT_WC_ERR_INVALID_CHARS;
+  int bytes = WideCharToMultiByte(CP_UTF8, flags, w.data(), wlen, nullptr, 0,
+                                  nullptr, nullptr);
+  if (bytes <= 0) {
+    flags = 0;
+    bytes = WideCharToMultiByte(CP_UTF8, flags, w.data(), wlen, nullptr, 0,
+                                nullptr, nullptr);
+    if (bytes <= 0) return {};
+  }
+
+  std::string out(static_cast<size_t>(bytes), '\0');
+  int written = WideCharToMultiByte(CP_UTF8, flags, w.data(), wlen, &out[0],
+                                    bytes, nullptr, nullptr);
+  if (written <= 0) return {};
+  // written is the exact UTF-8 byte count (no trailing NUL when wlen >= 0).
+  out.resize(static_cast<size_t>(written));
+  return out;
+}
 
 class utf8_system_category final : public std::error_category {
  public:
@@ -110,10 +195,8 @@ class utf8_system_category final : public std::error_category {
   std::string message(int error_code) const override {
     auto&& msg = system_message(error_code);
     if (msg) {
-      auto utf8_message = fmt::detail::to_utf8<wchar_t>();
-      if (utf8_message.convert(msg)) {
-        return utf8_message.str();
-      }
+      auto utf8 = system_message_to_utf8(msg);
+      if (!utf8.empty()) return utf8;
     }
     return "unknown error";
   }
@@ -149,10 +232,10 @@ void detail::format_windows_error(detail::buffer<char>& out, int error_code,
   FMT_TRY {
     auto&& msg = system_message(error_code);
     if (msg) {
-      auto utf8_message = to_utf8<wchar_t>();
-      if (utf8_message.convert(msg)) {
+      auto utf8 = system_message_to_utf8(msg);
+      if (!utf8.empty()) {
         fmt::format_to(appender(out), FMT_STRING("{}: {}"), message,
-                       string_view(utf8_message));
+                       string_view(utf8));
         return;
       }
     }
