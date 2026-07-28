@@ -4307,26 +4307,30 @@ struct formatter<nested_view<T, Char>, Char> {
   }
 };
 
+// Applies outer fill/align/width to content produced by a nested element
+// formatter. Element specs (type, precision, …) are parsed into formatter_
+// and used via nested(); width may be dynamic ('{}') and is resolved in
+// write_padded from the format context.
 template <typename T, typename Char = char> struct nested_formatter {
  private:
-  basic_specs specs_;
-  int width_;
+  format_specs specs_;
+  detail::arg_ref<Char> width_ref_;
   formatter<T, Char> formatter_;
 
  public:
-  constexpr nested_formatter() : width_(0) {}
+  constexpr nested_formatter() = default;
 
   FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
     auto it = ctx.begin(), end = ctx.end();
+    if (it == end || *it == '}') return it;
+
+    it = detail::parse_align(it, end, specs_);
     if (it == end) return it;
-    auto specs = format_specs();
-    it = detail::parse_align(it, end, specs);
-    specs_ = specs;
+
     Char c = *it;
-    auto width_ref = detail::arg_ref<Char>();
     if ((c >= '0' && c <= '9') || c == '{') {
-      it = detail::parse_width(it, end, specs, width_ref, ctx);
-      width_ = specs.width;
+      it = detail::parse_width(it, end, specs_, width_ref_, ctx);
+      if (it == end) return it;
     }
     ctx.advance_to(it);
     return formatter_.parse(ctx);
@@ -4334,13 +4338,12 @@ template <typename T, typename Char = char> struct nested_formatter {
 
   template <typename FormatContext, typename F>
   auto write_padded(FormatContext& ctx, F write) const -> decltype(ctx.out()) {
-    if (width_ == 0) return write(ctx.out());
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
+                                ctx);
+    if (specs.width == 0) return write(ctx.out());
     auto buf = basic_memory_buffer<Char>();
     write(basic_appender<Char>(buf));
-    auto specs = format_specs();
-    specs.width = width_;
-    specs.copy_fill_from(specs_);
-    specs.set_align(specs_.align());
     return detail::write<Char>(
         ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
   }

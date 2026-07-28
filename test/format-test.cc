@@ -2207,7 +2207,24 @@ template <> struct formatter<point> : nested_formatter<double> {
 FMT_END_NAMESPACE
 
 TEST(format_test, nested_formatter) {
-  EXPECT_EQ(fmt::format("{:>16.2f}", point{1, 2}), "    (1.00, 2.00)");
+  auto p = point{1, 2};
+  EXPECT_EQ(fmt::format("{:>16.2f}", p), "    (1.00, 2.00)");
+  // Static width pads the whole object.
+  EXPECT_EQ(fmt::format("{:20}", p), "(1, 2)              ");
+  EXPECT_EQ(fmt::format("{:>20}", p), "              (1, 2)");
+  EXPECT_EQ(fmt::format("{:.<20}", p), "(1, 2)..............");
+
+  // Dynamic width must resolve the same way (was ignored → unpadded).
+  EXPECT_EQ(fmt::format("{:{}}", p, 20), "(1, 2)              ");
+  EXPECT_EQ(fmt::format("{:<{}}", p, 20), "(1, 2)              ");
+  EXPECT_EQ(fmt::format("{:>{}}", p, 20), "              (1, 2)");
+  EXPECT_EQ(fmt::format("{:.>{}}", p, 20), "..............(1, 2)");
+  // "(1.00, 2.00)" is 12 chars; width 20 → 8 spaces of padding.
+  EXPECT_EQ(fmt::format("{:>{}.2f}", p, 20), "        (1.00, 2.00)");
+  // Named / manual index dynamic width.
+  EXPECT_EQ(fmt::format("{0:{1}}", p, 12), "(1, 2)      ");
+  EXPECT_EQ(fmt::format("{p:*>{w}}", fmt::arg("p", p), fmt::arg("w", 10)),
+            "****(1, 2)");
 }
 #endif  // __cpp_generic_lambdas
 
