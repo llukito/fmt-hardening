@@ -2225,6 +2225,16 @@ TEST(format_test, nested_formatter) {
   EXPECT_EQ(fmt::format("{0:{1}}", p, 12), "(1, 2)      ");
   EXPECT_EQ(fmt::format("{p:*>{w}}", fmt::arg("p", p), fmt::arg("w", 10)),
             "****(1, 2)");
+
+  // Dynamic precision (and width+precision): nested format_to must still see
+  // the parent args so "{:{}.{}f}" / "{:20.{}f}" resolve correctly.
+  EXPECT_EQ(fmt::format("{:20.{}f}", p, 2), "(1.00, 2.00)        ");
+  EXPECT_EQ(fmt::format("{:{}.{}f}", p, 20, 2), "(1.00, 2.00)        ");
+  EXPECT_EQ(fmt::format("{:{}.2f}", p, 20), "(1.00, 2.00)        ");
+  EXPECT_EQ(fmt::format("{:>{}.{}f}", p, 20, 2), "        (1.00, 2.00)");
+  EXPECT_EQ(fmt::format("{:.{}f}", p, 3), "(1.000, 2.000)");
+  // "(1.0, 2.0)" is 10 chars; width 16 → 6 fill chars.
+  EXPECT_EQ(fmt::format("{:.>{}.{}f}", p, 16, 1), "......(1.0, 2.0)");
 }
 #endif  // __cpp_generic_lambdas
 

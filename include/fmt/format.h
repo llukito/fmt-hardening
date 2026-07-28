@@ -4290,9 +4290,19 @@ template <typename T> struct formatter<group_digits_view<T>> : formatter<T> {
   }
 };
 
+// View of a subobject formatted with nested_formatter's element specs.
+// When has_parent_args is set, format uses the parent argument list so
+// dynamic element width/precision (e.g. "{:{}.{}f}") resolve correctly —
+// nested values are usually emitted via a separate format_to("{}", …) that
+// would otherwise only see the nested views as arguments.
 template <typename T, typename Char> struct nested_view {
   const formatter<T, Char>* fmt;
   const T* value;
+  // Parent (outer) format_args / locale for dynamic nested specs. Only used
+  // for Char == char, where format_to uses context / format_args.
+  format_args parent_args;
+  locale_ref parent_loc;
+  bool has_parent_args = false;
 };
 
 template <typename T, typename Char>
@@ -4303,19 +4313,47 @@ struct formatter<nested_view<T, Char>, Char> {
   template <typename FormatContext>
   auto format(nested_view<T, Char> view, FormatContext& ctx) const
       -> decltype(ctx.out()) {
+    // Rebind to the parent argument list when the nested formatter provided
+    // one; keep the current output iterator so content still goes to the
+    // write_padded buffer / outer sink.
+    if (view.has_parent_args) {
+      if constexpr (std::is_same<Char, char>::value &&
+                    std::is_same<remove_cvref_t<FormatContext>,
+                                 context>::value) {
+        auto rebound = context(ctx.out(), view.parent_args, view.parent_loc);
+        auto out = view.fmt->format(*view.value, rebound);
+        ctx.advance_to(out);
+        return out;
+      }
+    }
     return view.fmt->format(*view.value, ctx);
   }
 };
 
 // Applies outer fill/align/width to content produced by a nested element
 // formatter. Element specs (type, precision, …) are parsed into formatter_
-// and used via nested(); width may be dynamic ('{}') and is resolved in
-// write_padded from the format context.
+// and used via nested(). Outer width and nested dynamic width/precision are
+// resolved from the parent format context in write_padded / nested().
 template <typename T, typename Char = char> struct nested_formatter {
  private:
   format_specs specs_;
   detail::arg_ref<Char> width_ref_;
   formatter<T, Char> formatter_;
+  // Bound for the duration of write_padded so nested() can hand parent args
+  // to nested_view (format_to would otherwise hide them).
+  mutable format_args bound_args_{};
+  mutable locale_ref bound_loc_{};
+  mutable bool has_bound_args_ = false;
+
+  template <typename FormatContext>
+  void bind_parent(FormatContext& ctx) const {
+    if constexpr (std::is_same<Char, char>::value &&
+                  std::is_same<remove_cvref_t<FormatContext>, context>::value) {
+      bound_args_ = ctx.args();
+      bound_loc_ = ctx.locale();
+      has_bound_args_ = true;
+    }
+  }
 
  public:
   constexpr nested_formatter() = default;
@@ -4341,6 +4379,13 @@ template <typename T, typename Char = char> struct nested_formatter {
     auto specs = specs_;
     detail::handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_,
                                 ctx);
+
+    bind_parent(ctx);
+    struct unbind {
+      const nested_formatter* self;
+      ~unbind() { self->has_bound_args_ = false; }
+    } guard{this};
+
     if (specs.width == 0) return write(ctx.out());
     auto buf = basic_memory_buffer<Char>();
     write(basic_appender<Char>(buf));
@@ -4349,7 +4394,13 @@ template <typename T, typename Char = char> struct nested_formatter {
   }
 
   auto nested(const T& value) const -> nested_view<T, Char> {
-    return nested_view<T, Char>{&formatter_, &value};
+    nested_view<T, Char> view{&formatter_, &value};
+    if (has_bound_args_) {
+      view.parent_args = bound_args_;
+      view.parent_loc = bound_loc_;
+      view.has_parent_args = true;
+    }
+    return view;
   }
 };
 
