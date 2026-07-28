@@ -191,7 +191,7 @@ template <typename Char, typename V, int N> struct field {
 template <typename Char, typename T, int N>
 struct is_compiled_format<field<Char, T, N>> : std::true_type {};
 
-// A replacement field that refers to argument with name.
+// A replacement field that refers to argument with name (no format specs).
 template <typename Char> struct runtime_named_field {
   using char_type = Char;
   basic_string_view<Char> name;
@@ -223,7 +223,66 @@ template <typename Char> struct runtime_named_field {
 template <typename Char>
 struct is_compiled_format<runtime_named_field<Char>> : std::true_type {};
 
-// A replacement field that refers to argument N and has format specifiers.
+// Runtime-named field with format specs (e.g. "{name:^4}" with fmt::arg).
+// Keeps the surrounding format string compiled; only the named arg is resolved
+// and formatted at runtime (type is not known at compile time for fmt::arg).
+template <typename Char> struct runtime_named_spec_field {
+  using char_type = Char;
+  basic_string_view<Char> name;
+  basic_string_view<Char> specs;  // between ':' and '}', e.g. "^4"
+
+  template <typename OutputIt, typename... T>
+  auto format(OutputIt out, const T&... args) const -> OutputIt {
+    bool found = false;
+    auto try_one = [&](const auto& arg) {
+      if (found) return;
+      using arg_type = remove_cvref_t<decltype(arg)>;
+      if constexpr (is_named_arg<arg_type>::value) {
+        if (name != arg.name) return;
+        found = true;
+        using value_type = remove_cvref_t<decltype(arg.value)>;
+        auto f = formatter<value_type, Char>();
+        // Named fields are manual-index mode (same as runtime format): a bare
+        // '{}' for width/precision is invalid; use an explicit index.
+        auto parse_ctx = parse_context<Char>(specs, -1);
+        parse_ctx.advance_to(f.parse(parse_ctx));
+        // Full arg pack so dynamic width/precision in specs can resolve.
+        const auto& vargs =
+            fmt::make_format_args<basic_format_context<OutputIt, Char>>(
+                args...);
+        basic_format_context<OutputIt, Char> ctx(out, vargs);
+        out = f.format(arg.value, ctx);
+      }
+    };
+    (try_one(args), ...);
+    if (!found) {
+      FMT_THROW(format_error("argument with specified name is not found"));
+    }
+    return out;
+  }
+};
+
+template <typename Char>
+struct is_compiled_format<runtime_named_spec_field<Char>> : std::true_type {};
+
+// Finds the '}' that closes a replacement field starting at pos (first char
+// of format specs, after ':'). Handles nested braces in dynamic width/prec
+// (e.g. "{name:{}}").
+template <typename Char>
+constexpr auto find_replacement_field_end(basic_string_view<Char> str,
+                                          size_t pos) -> size_t {
+  int depth = 1;
+  for (; pos != str.size(); ++pos) {
+    auto c = str[pos];
+    if (c == '{')
+      ++depth;
+    else if (c == '}') {
+      --depth;
+      if (depth == 0) return pos;
+    }
+  }
+  return str.size();
+}// A replacement field that refers to argument N and has format specifiers.
 template <typename Char, typename V, int N> struct spec_field {
   using char_type = Char;
   formatter<V, Char> fmt;
@@ -306,8 +365,10 @@ constexpr auto parse_specs(basic_string_view<Char> str, size_t pos,
       compile_parse_context<Char>(str, max_value<int>(), nullptr, next_arg_id);
   auto f = formatter<T, Char>();
   auto end = f.parse(ctx);
+  // Stay in manual mode when we entered in manual mode (next_arg_id < 0).
+  // Do not treat next_arg_id == 0 as manual — that is the first automatic id.
   return {f, pos + fmt::detail::to_unsigned(end - str.data()),
-          next_arg_id == 0 ? manual_indexing_id : ctx.next_arg_id()};
+          next_arg_id < 0 ? manual_indexing_id : ctx.next_arg_id()};
 }
 
 template <typename Char> struct arg_id_handler {
@@ -364,8 +425,10 @@ constexpr auto parse_replacement_field_then_tail(S fmt) {
   } else if constexpr (c != ':') {
     FMT_THROW(format_error("expected ':'"));
   } else {
+    // Pass manual_indexing_id through so dynamic '{}' in specs cannot
+    // silently switch to automatic indexing (e.g. "{0:{}}" must error).
     constexpr auto result = parse_specs<typename field_type<T>::type>(
-        str, END_POS + 1, NEXT_ID == manual_indexing_id ? 0 : NEXT_ID);
+        str, END_POS + 1, NEXT_ID);
     if constexpr (result.end >= str.size() || str[result.end] != '}') {
       FMT_THROW(format_error("expected '}'"));
       return 0;
@@ -430,7 +493,18 @@ constexpr auto compile_format_string(S fmt) {
           return parse_tail<Args, arg_id_end_pos + 1, ID, DYNAMIC_NAMES>(
               runtime_named_field<char_type>{arg_id_result.arg_id.name}, fmt);
         } else if constexpr (c == ':') {
-          return unknown_format();  // no type info for specs parsing
+          // Runtime named arg (fmt::arg) with specs: keep the string compiled
+          // and resolve/format the named value at runtime.
+          constexpr auto specs_begin = arg_id_end_pos + 1;
+          constexpr auto specs_end =
+              find_replacement_field_end(str, specs_begin);
+          static_assert(specs_end < str.size(),
+                        "missing '}' in format string");
+          return parse_tail<Args, specs_end + 1, ID, DYNAMIC_NAMES>(
+              runtime_named_spec_field<char_type>{
+                  arg_id_result.arg_id.name,
+                  {str.data() + specs_begin, specs_end - specs_begin}},
+              fmt);
         }
       }
     }

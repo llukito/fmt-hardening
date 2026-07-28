@@ -113,6 +113,9 @@ TEST(compile_test, manual_ordering) {
   EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{1} {0}"), 43, 41));
   EXPECT_EQ("41 43", fmt::format(FMT_COMPILE("{0} {2}"), 41, 42, 43));
   EXPECT_EQ("  41   43", fmt::format(FMT_COMPILE("{1:{2}} {0:4}"), 43, 41, 4));
+  // Explicit indices for nested dynamic width stay in manual mode.
+  EXPECT_EQ("        42", fmt::format(FMT_COMPILE("{0:{1}}"), 42, 10));
+  EXPECT_EQ("   42", fmt::format(FMT_COMPILE("{1:{0}}"), 5, 42));
   EXPECT_EQ("42 1.2 ms ",
             fmt::format(FMT_COMPILE("{0} {1:7.1%Q %q}"), 42,
                         std::chrono::duration<double, std::milli>(1.234)));
@@ -121,6 +124,10 @@ TEST(compile_test, manual_ordering) {
       fmt::format(FMT_COMPILE("{0} {1} {2} {3} {4} {5}"), true, 42, 42.0f,
                   "foo", reinterpret_cast<void*>(0x1234), test_formattable()));
 }
+
+// "{0:{}}" mixes manual field index with automatic dynamic width — invalid.
+// FMT_COMPILE rejects it at compile time (same error plain format throws at
+// runtime). Valid form is "{0:{1}}".
 
 TEST(compile_test, named) {
   auto runtime_named_field_compiled =
@@ -152,6 +159,25 @@ TEST(compile_test, named) {
   EXPECT_THROW(fmt::format(FMT_COMPILE("{invalid}"), fmt::arg("valid", 42)),
                fmt::format_error);
 
+  // Runtime named args with format specs stay partially compiled (not a full
+  // unknown_format fallback of the whole string).
+  auto runtime_named_spec_compiled =
+      fmt::detail::compile<decltype(fmt::arg("name", 42))>(
+          FMT_COMPILE("{name:^4}"));
+  static_assert(
+      std::is_same_v<decltype(runtime_named_spec_compiled),
+                     fmt::detail::runtime_named_spec_field<char>>);
+  EXPECT_EQ(" 42 ",
+            fmt::format(FMT_COMPILE("{name:^4}"), fmt::arg("name", 42)));
+  EXPECT_EQ("x**42**y", fmt::format(FMT_COMPILE("x{name:*^6}y"),
+                                    fmt::arg("name", 42)));
+  EXPECT_EQ("00042", fmt::format(FMT_COMPILE("{n:05}"), fmt::arg("n", 42)));
+  // Named fields are manual-index: dynamic width needs an explicit arg index.
+  EXPECT_EQ("   42",
+            fmt::format(FMT_COMPILE("{n:{1}}"), fmt::arg("n", 42), 5));
+  EXPECT_THROW(fmt::format(FMT_COMPILE("{n:{}}"), fmt::arg("n", 42), 5),
+               fmt::format_error);
+
 #  if FMT_USE_NONTYPE_TEMPLATE_ARGS
   using namespace fmt::literals;
   auto statically_named_field_compiled =
@@ -163,6 +189,12 @@ TEST(compile_test, named) {
             fmt::format(FMT_COMPILE("{a0} {a1}"), "a0"_a = 41, "a1"_a = 43));
   EXPECT_EQ("41 43",
             fmt::format(FMT_COMPILE("{a1} {a0}"), "a0"_a = 43, "a1"_a = 41));
+  // Static named + specs fully compile to spec_field.
+  auto static_named_spec_compiled =
+      fmt::detail::compile<decltype("name"_a = 42)>(FMT_COMPILE("{name:^4}"));
+  static_assert(std::is_same_v<decltype(static_named_spec_compiled),
+                               fmt::detail::spec_field<char, int, 0>>);
+  EXPECT_EQ(" 42 ", fmt::format(FMT_COMPILE("{name:^4}"), "name"_a = 42));
 #  endif
 }
 
